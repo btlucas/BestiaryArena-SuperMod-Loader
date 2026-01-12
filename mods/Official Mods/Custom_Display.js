@@ -124,6 +124,11 @@ function monitorGameState() {
       }
       
       if (needsReapply) {
+        // Skip reapplying if Board Analyzer or Manual Runner is running
+        if (window.__modCoordination?.boardAnalyzerRunning || window.__modCoordination?.manualRunnerActive) {
+          return;
+        }
+        
         console.log('DOM changes detected, reapplying performance mode');
         reapplyPerformanceMode();
       }
@@ -235,6 +240,12 @@ function applyBaseStyles() {
 // Create overlay to show hitboxes and walkable paths
 function createHitboxOverlay() {
   try {
+    // Check if game state is ready
+    if (!globalThis.state || !globalThis.state.board || !globalThis.state.board.getSnapshot) {
+      console.log('[Custom Display] Game state not ready for hitbox overlay');
+      return;
+    }
+    
     // Get the room data from the game state
     const boardContext = globalThis.state.board.getSnapshot().context;
     if (!boardContext || !boardContext.selectedMap || !boardContext.selectedMap.selectedRoom) {

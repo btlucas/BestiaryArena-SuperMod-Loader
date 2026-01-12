@@ -705,6 +705,24 @@ const getCurrentStaminaFromGameStateAPI = () => {
     
     // Fallback to DOM if calculation not possible (works in foreground tabs, but not background)
     console.log('[Bestiary Automator] Cannot calculate stamina from timestamp (missing maxStamina or staminaWillBeFullAt), falling back to DOM');
+    
+    // Refresh the page once if this error occurs (to reload game state properly)
+    if (!hasRefreshedForStaminaError) {
+      console.log('[Bestiary Automator] Refreshing page due to stamina calculation error...');
+      hasRefreshedForStaminaError = true;
+      // Save flag to localStorage to persist across refresh
+      try {
+        localStorage.setItem('bestiary-automator-stamina-refresh', 'true');
+      } catch (error) {
+        console.error('[Bestiary Automator] Error saving refresh flag:', error);
+      }
+      // Refresh after a short delay to ensure log is visible
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+      return null;
+    }
+    
     return getCurrentStaminaFromState();
     
   } catch (error) {
@@ -1228,6 +1246,9 @@ let trackedStamina = null;
 // Store max stamina (parsed from DOM at init)
 let maxStamina = null;
 
+// Track if we've already refreshed due to stamina calculation error
+let hasRefreshedForStaminaError = false;
+
 
 // Check if user has any enabled stamina potions in inventory that meet thresholds
 const hasStaminaPotions = () => {
@@ -1506,8 +1527,9 @@ const takeRewardsIfAvailable = async () => {
   }
   
   try {
-    // Check if player state is available
-    if (!globalThis.state?.player) {
+    // Check if game state is ready
+    if (!globalThis.state || !globalThis.state.player || !globalThis.state.player.getSnapshot) {
+      console.log('[Bestiary Automator] Game state not ready for rewards collection');
       return;
     }
     
@@ -1591,6 +1613,12 @@ const takeRewardsIfAvailable = async () => {
 const collectSeashellIfReady = async () => {
   try {
     console.log('[Bestiary Automator] === Starting seashell collection check ===');
+    
+    // Check if game state is ready
+    if (!globalThis.state || !globalThis.state.player || !globalThis.state.player.getSnapshot) {
+      console.log('[Bestiary Automator] Game state not ready for seashell collection');
+      return;
+    }
     
     // Check if seashell is ready
     const playerContext = globalThis.state.player.getSnapshot().context;
@@ -2879,6 +2907,12 @@ const handleFasterAutoplay = async () => {
   }
   
   try {
+    // Check if game state is ready
+    if (!globalThis.state || !globalThis.state.clientConfig || !globalThis.state.clientConfig.trigger) {
+      console.log('[Bestiary Automator] Game state not ready for faster autoplay');
+      return;
+    }
+    
     // Set autoplay delay to 0 for instant execution
     globalThis.state.clientConfig.trigger.setState({
       fn: (prev) => ({
@@ -3881,6 +3915,23 @@ function init() {
   rewardsCollectedThisSession = false;
   fasterAutoplayExecutedThisSession = false;
   fasterAutoplayRunning = false;
+  
+  // Check if we just refreshed due to stamina error
+  try {
+    const refreshFlag = localStorage.getItem('bestiary-automator-stamina-refresh');
+    if (refreshFlag === 'true') {
+      console.log('[Bestiary Automator] Page was refreshed due to stamina calculation error');
+      hasRefreshedForStaminaError = true;
+      // Clear the flag after 5 minutes to allow future refreshes if needed
+      setTimeout(() => {
+        localStorage.removeItem('bestiary-automator-stamina-refresh');
+        hasRefreshedForStaminaError = false;
+        console.log('[Bestiary Automator] Stamina refresh flag cleared');
+      }, 5 * 60 * 1000); // 5 minutes
+    }
+  } catch (error) {
+    console.error('[Bestiary Automator] Error checking refresh flag:', error);
+  }
   
   // Parse max stamina from DOM (for Game State-based refill calculation)
   // Try immediately and with a delay in case DOM isn't ready

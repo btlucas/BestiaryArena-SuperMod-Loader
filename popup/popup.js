@@ -989,17 +989,16 @@ const modDescriptions = {
   'Better Forge': 'Enhanced forge interface and functionality.',
   'Better Highscores': 'Improved highscores display and features.',
   'Better Hy\'genie': 'Enhanced Hy\'genie interaction features.',
+  'Better Rune Recycler': 'Automates rune recycling - use multiple Recycle Runes automatically.',
   'Better Setups': 'Improved setup management and organization.',
   'Better Tasker': 'Enhanced task automation features.',
   'Better Yasir': 'Improved Yasir interaction and features.',
   'Cyclopedia': 'Comprehensive creature and item encyclopedia.',
   'Dice Roller': 'Roll dice for various game mechanics.',
-  'Guilds': 'Guild management and interaction features.',
   'Hunt Analyzer': 'Analyze and optimize hunting strategies.',
   'Raid Hunter': 'Enhanced raid hunting features and tracking.',
   'Manual Runner': 'Run manual mode until victory with automatic floor progression.',
-  'Stamina Optimizer': 'Optimize stamina usage and management.',
-  'VIP List': 'Manage and view VIP list features.'
+  'Stamina Optimizer': 'Optimize stamina usage and management.'
 };
 
 // Super Mods list - kept in sync with mod-registry.js
@@ -1013,6 +1012,7 @@ const superModNames = [
   'Better Forge.js',
   'Better Highscores.js',
   'Better Hy\'genie.js',
+  'Better Rune Recycler.js',
   'Better Setups.js',
   'Better Tasker.js',
   'Better Yasir.js',
@@ -1027,23 +1027,12 @@ const superModNames = [
   'Stamina Optimizer.js'
 ];
 
-// OT Mods list - kept in sync with mod-registry.js
-const otModNames = [
-  'Quests.js',
-  'Guilds.js',
-  'VIP List.js'
-];
-
 const hiddenMods = [
   'inventory-database.js',
   'creature-database.js',
-  'Welcome.js',
   'equipment-database.js',
   'maps-database.js',
-  'playereq-database.js',
-  'Mod Settings.js',
-  'RunTracker.js',
-  'Outfiter.js'
+  'playereq-database.js'
 ];
 
 function normalizeModName(name) {

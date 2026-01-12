@@ -29,9 +29,6 @@ const defaultConfig = {
   includeRunDataByDefault: true,
   includeHuntDataByDefault: true,
   inventoryBorderStyle: 'Original',
-  vipListInterface: 'modal', // 'modal' or 'panel'
-  enableVipListChat: false, // Enable messaging/chat feature in VIP List (controls both VIP List chat and Global Chat)
-  vipListMessageFilter: 'all', // 'all' or 'friends' - who can send messages
   betterHighscoresBackgroundOpacity: 1.0 // Opacity for Better Highscores background (0.0 to 1.0)
 };
 
@@ -1811,7 +1808,7 @@ function showSettingsModal() {
     let menuItems = [
       { id: 'creatures', label: t('mods.betterUI.menuCreatures'), selected: true },
       { id: 'ui', label: t('mods.betterUI.menuUI'), selected: false },
-      { id: 'mod-coordination', label: t('mods.betterUI.menuModCoordination'), selected: false },
+      { id: 'hunt-analyzer', label: t('mods.betterUI.menuHuntAnalyzer'), selected: false },
       { id: 'advanced', label: t('mods.betterUI.menuAdvanced'), selected: false },
       { id: 'backup', label: t('mods.betterUI.menuBackup'), selected: false }
     ];
@@ -2080,97 +2077,6 @@ function showSettingsModal() {
           </div>
         `;
         rightColumn.appendChild(huntAnalyzerContent);
-      } else if (categoryId === 'vip-list') {
-        const vipListContent = document.createElement('div');
-        vipListContent.innerHTML = `
-          <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-            <span style="color: #ccc;">${t('mods.betterUI.vipListInterface')}</span>
-            <select id="vip-list-interface-selector" style="width: fit-content; background: #333; color: #ccc; border: 1px solid #555; padding: 4px 20px 4px 10px; border-radius: 4px; pointer-events: auto;">
-              <option value="modal">${t('mods.betterUI.vipListInterfaceModal')}</option>
-              <option value="panel">${t('mods.betterUI.vipListInterfacePanel')}</option>
-            </select>
-          </div>
-          <div style="margin-bottom: 15px;">
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-              <input type="checkbox" id="enable-vip-list-chat-toggle" style="transform: scale(1.2);">
-              <span>${t('mods.betterUI.enableVipListChat')}</span>
-            </label>
-          </div>
-          <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-            <span style="color: #ccc;">${t('mods.betterUI.vipListMessageFilter')}</span>
-            <select id="vip-list-message-filter-selector" style="width: fit-content; background: #333; color: #ccc; border: 1px solid #555; padding: 4px 20px 4px 10px; border-radius: 4px; pointer-events: auto;">
-              <option value="all">${t('mods.betterUI.vipListMessageFilterAll')}</option>
-              <option value="friends">${t('mods.betterUI.vipListMessageFilterFriends')}</option>
-            </select>
-          </div>
-        `;
-        rightColumn.appendChild(vipListContent);
-        
-        // Add footer at the bottom
-        const vipListFooter = document.createElement('div');
-        vipListFooter.style.cssText = 'margin-top: auto; padding-top: 10px;';
-        vipListFooter.innerHTML = `
-          <a href="https://github.com/styrserver/BestiaryArena-SuperMod-Loader/blob/main/docs/chat_documentation.md" target="_blank" rel="noopener noreferrer" style="color: #4a9eff; text-decoration: none; font-size: 13px;">📖 ${t('mods.betterUI.vipListChatDocumentation')}</a>
-        `;
-        rightColumn.appendChild(vipListFooter);
-      } else if (categoryId === 'mod-coordination') {
-        const modCoordinationContent = document.createElement('div');
-        modCoordinationContent.innerHTML = `
-          <div style="margin-bottom: 15px;">
-            <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 4px; margin-bottom: 15px;">
-              <span style="font-size: 18px; color: #ffc107; flex-shrink: 0;">⚠️</span>
-              <p style="color: #ffc107; margin: 0; font-size: 13px; line-height: 1.4;">
-                ${t('mods.betterUI.modCoordinationWarning')}
-              </p>
-            </div>
-            <p style="color: #a6adc8; margin: 0 0 10px 0; font-size: 13px;">
-              ${t('mods.betterUI.modCoordinationDescription')}
-            </p>
-            <div id="mod-coordination-list" style="display: flex; flex-direction: column; gap: 4px;">
-              <!-- Mod priority inputs will be dynamically generated here -->
-            </div>
-          </div>
-        `;
-        rightColumn.appendChild(modCoordinationContent);
-        
-        // Load and display mod priorities
-        scheduleTimeout(() => {
-          const statusMap = loadAndDisplayModPriorities(modCoordinationContent);
-          
-          // Subscribe to mod state changes to update status dynamically
-          if (window.ModCoordination) {
-            // Listen for enabled state changes
-            const unsubscribeEnabled = window.ModCoordination.on('modEnabledChanged', (data) => {
-              const statusSpan = statusMap[data.modName];
-              if (statusSpan) {
-                // Get current mod state
-                const modState = window.ModCoordination.getModState(data.modName);
-                if (modState) {
-                  const priorityInput = statusSpan.parentElement.querySelector('input[data-mod-name="' + data.modName + '"]');
-                  const currentPriority = priorityInput ? parseInt(priorityInput.value) : modState.priority;
-                  updatePriorityStatus(statusSpan, modState, currentPriority);
-                }
-              }
-            });
-            
-            // Listen for active state changes
-            const unsubscribeActive = window.ModCoordination.on('modActiveChanged', (data) => {
-              const statusSpan = statusMap[data.modName];
-              if (statusSpan) {
-                // Get current mod state
-                const modState = window.ModCoordination.getModState(data.modName);
-                if (modState) {
-                  const priorityInput = statusSpan.parentElement.querySelector('input[data-mod-name="' + data.modName + '"]');
-                  const currentPriority = priorityInput ? parseInt(priorityInput.value) : modState.priority;
-                  updatePriorityStatus(statusSpan, modState, currentPriority);
-                }
-              }
-            });
-            
-            // Store unsubscribe functions for cleanup (if needed)
-            modCoordinationContent._unsubscribers = [unsubscribeEnabled, unsubscribeActive];
-          }
-        }, 0);
       } else if (categoryId === 'backup') {
         const backupContent = document.createElement('div');
         backupContent.innerHTML = `
@@ -2339,41 +2245,6 @@ function showSettingsModal() {
           }
           
           console.log('[Mod Settings] Better Highscores background opacity updated:', opacityValue);
-        });
-      }
-      
-      const vipListInterfaceSelector = content.querySelector('#vip-list-interface-selector');
-      if (vipListInterfaceSelector) {
-        createSettingsDropdownHandler('vipListInterface')(vipListInterfaceSelector);
-      }
-      
-      const vipListMessageFilterSelector = content.querySelector('#vip-list-message-filter-selector');
-      if (vipListMessageFilterSelector) {
-        createSettingsDropdownHandler('vipListMessageFilter')(vipListMessageFilterSelector);
-      }
-      
-      const enableVipListChatCheckbox = content.querySelector('#enable-vip-list-chat-toggle');
-      if (enableVipListChatCheckbox) {
-        enableVipListChatCheckbox.checked = config.enableVipListChat;
-        
-        enableVipListChatCheckbox.addEventListener('change', () => {
-          config.enableVipListChat = enableVipListChatCheckbox.checked;
-          saveConfig();
-          
-          // Update VIP List mod's messaging config if available
-          if (window.VIPList && window.VIPList.updateMessagingConfig) {
-            window.VIPList.updateMessagingConfig({ enabled: enableVipListChatCheckbox.checked });
-          } else if (window.VIPList && window.VIPList.test) {
-            // Fallback: try to access MESSAGING_CONFIG directly if exposed
-            console.log('[Mod Settings] VIP List mod messaging config update attempted');
-          }
-          
-          // Update VIP List mod's Global Chat state (now controlled by enableVipListChat)
-          if (window.VIPList && typeof window.VIPList.updateGlobalChatState === 'function') {
-            window.VIPList.updateGlobalChatState(enableVipListChatCheckbox.checked);
-          }
-          
-          console.log('[Mod Settings] Chat', enableVipListChatCheckbox.checked ? 'enabled' : 'disabled');
         });
       }
     
@@ -5129,8 +5000,9 @@ function startAutoplayRefreshMonitor() {
         }
       });
       
-      // Subscribe to board state changes to track activity
-      subscriptions.autoplayRefreshBoardState = globalThis.state.board.subscribe((state) => {
+      // Subscribe to game end events to track meaningful activity
+      subscriptions.autoplayRefreshEndGame = globalThis.state.board.on('endGame', (event) => {
+        console.log('[Mod Settings] Game ended - resetting board activity timer');
         resetBoardActivityTimer();
       });
       
@@ -5248,17 +5120,17 @@ function checkAutoplayRefreshThreshold() {
       // Check session time threshold
       const sessionThresholdReached = sessionMinutes > 0 && sessionMinutes >= config.autoplayRefreshMinutes;
       
-      // Check board inactivity threshold
+      // Check board inactivity threshold (no game activity for configured duration)
       const inactivityThresholdReached = inactivityMinutes >= config.autoplayRefreshMinutes;
       
       thresholdReached = internalThresholdReached || sessionThresholdReached || inactivityThresholdReached;
       
       if (internalThresholdReached) {
-        reason = 'internal timer';
+        reason = 'internal timer reached threshold';
       } else if (sessionThresholdReached) {
-        reason = 'session time';
-      } else {
-        reason = 'board inactivity';
+        reason = 'session time reached threshold';
+      } else if (inactivityThresholdReached) {
+        reason = `no game activity for ${inactivityMinutes.toFixed(1)} minutes`;
       }
     } else if (timerMode === 'internal') {
       // Use internal timer mode - track time independently
@@ -5275,11 +5147,16 @@ function checkAutoplayRefreshThreshold() {
       // Check internal timer threshold
       const internalThresholdReached = internalMinutes >= config.autoplayRefreshMinutes;
       
-      // Check board inactivity threshold
+      // Check board inactivity threshold (no game activity for configured duration)
       const inactivityThresholdReached = inactivityMinutes >= config.autoplayRefreshMinutes;
       
       thresholdReached = internalThresholdReached || inactivityThresholdReached;
-      reason = internalThresholdReached ? 'internal timer' : 'board inactivity';
+      
+      if (internalThresholdReached) {
+        reason = 'internal timer reached threshold';
+      } else if (inactivityThresholdReached) {
+        reason = `no game activity for ${inactivityMinutes.toFixed(1)} minutes`;
+      }
     } else {
       // Use autoplay session time mode (original behavior)
       const currentMinutes = getAutoplaySessionTime();
@@ -5290,11 +5167,16 @@ function checkAutoplayRefreshThreshold() {
       // Check session time threshold
       const sessionThresholdReached = currentMinutes > 0 && currentMinutes >= config.autoplayRefreshMinutes;
       
-      // Check board inactivity threshold
+      // Check board inactivity threshold (no game activity for configured duration)
       const inactivityThresholdReached = inactivityMinutes >= config.autoplayRefreshMinutes;
       
       thresholdReached = sessionThresholdReached || inactivityThresholdReached;
-      reason = sessionThresholdReached ? 'session time' : 'board inactivity';
+      
+      if (sessionThresholdReached) {
+        reason = 'session time reached threshold';
+      } else if (inactivityThresholdReached) {
+        reason = `no game activity for ${inactivityMinutes.toFixed(1)} minutes`;
+      }
     }
     
     if (thresholdReached) {
@@ -5331,10 +5213,10 @@ function stopAutoplayRefreshMonitor() {
       console.log('[Mod Settings] Autoplay refresh setPlayMode subscription stopped');
     }
     
-    if (subscriptions.autoplayRefreshBoardState && typeof subscriptions.autoplayRefreshBoardState === 'function') {
-      subscriptions.autoplayRefreshBoardState();
-      subscriptions.autoplayRefreshBoardState = null;
-      console.log('[Mod Settings] Autoplay refresh board state subscription stopped');
+    if (subscriptions.autoplayRefreshEndGame && typeof subscriptions.autoplayRefreshEndGame === 'function') {
+      subscriptions.autoplayRefreshEndGame();
+      subscriptions.autoplayRefreshEndGame = null;
+      console.log('[Mod Settings] Autoplay refresh end game subscription stopped');
     }
     
     // Clear board inactivity timer

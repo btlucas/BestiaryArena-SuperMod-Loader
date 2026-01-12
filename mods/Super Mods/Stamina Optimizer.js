@@ -17,45 +17,6 @@ if (window.__staminaOptimizerLoaded) {
 window.__staminaOptimizerLoaded = true;
 console.log('[Stamina Optimizer] Initializing...');
 
-// Register with mod coordination system
-// Priority 110: Higher than Raid Hunter (100) so it can stop mods when stamina is low
-// but lower than Manual Runner (150) and Board Analyzer (200) which are system-level tools
-if (window.ModCoordination) {
-    // Check if there's a saved priority override that's the old default (5)
-    // If so, remove it so the new default (110) is used
-    try {
-        const savedPriorities = localStorage.getItem('mod-coordination-priorities');
-        if (savedPriorities) {
-            const parsed = JSON.parse(savedPriorities);
-            if (parsed['Stamina Optimizer'] === 5) {
-                // Remove the old default override so new default (110) is used
-                delete parsed['Stamina Optimizer'];
-                localStorage.setItem('mod-coordination-priorities', JSON.stringify(parsed));
-                console.log('[Stamina Optimizer] Removed old priority override (5), will use new default (110)');
-            }
-        }
-    } catch (error) {
-        console.warn('[Stamina Optimizer] Error checking saved priorities:', error);
-    }
-    
-    // Register or update registration
-    const existingMod = window.ModCoordination.getModState('Stamina Optimizer');
-    if (existingMod) {
-        // Mod already registered - update priority if different from new default
-        if (existingMod.priority !== 110) {
-            window.ModCoordination.updateModPriority('Stamina Optimizer', 110);
-            console.log('[Stamina Optimizer] Updated priority from', existingMod.priority, 'to 110');
-        }
-    } else {
-        // First time registration - use new default priority 110
-        window.ModCoordination.registerMod('Stamina Optimizer', {
-            priority: 110,
-            metadata: { description: 'Automated stamina management system' }
-        });
-    }
-    window.ModCoordination.updateModState('Stamina Optimizer', { enabled: true });
-}
-
 // ============================================================================
 // 1. CONSTANTS
 // ============================================================================
@@ -66,7 +27,7 @@ const CONFIG_PANEL_ID = `${MOD_ID}-config-panel`;
 
 const DEFAULT_MAX_STAMINA = 350;
 const DEFAULT_MIN_STAMINA = 100;
-const DEFAULT_ACTIONS = ['boosted-maps'];
+const DEFAULT_ACTION = 'boosted-maps';
 
 const AUTOMATION_ENABLED = true;
 const AUTOMATION_DISABLED = false;
@@ -104,16 +65,48 @@ const COLOR_SUCCESS = '#4ade80';
 // 2. STATE MANAGEMENT
 // ============================================================================
 
-// Use global ControlManager from coordination system
-// The coordination system initializes AutoplayManager, so we just use it
-if (!window.AutoplayManager && window.ModCoordination) {
-    window.AutoplayManager = window.ModCoordination.getControlManager('autoplay', {
-        originalMode: null,
-        isControlledByOther(modName) {
-            return this.currentOwner !== null && this.currentOwner !== modName;
+// Control Manager class for coordination
+class ControlManager {
+    constructor(name, uniqueProperties = {}) {
+        this.name = name;
+        this.currentOwner = null;
+        Object.assign(this, uniqueProperties);
+    }
+    
+    requestControl(modName) {
+        if (this.currentOwner === null || this.currentOwner === modName) {
+            this.currentOwner = modName;
+            console.log(`[${this.name}] Control granted to ${modName}`);
+            return true;
         }
-    });
+        console.log(`[${this.name}] Control denied to ${modName} (currently owned by ${this.currentOwner})`);
+        return false;
+    }
+    
+    releaseControl(modName) {
+        if (this.currentOwner === modName) {
+            this.currentOwner = null;
+            console.log(`[${this.name}] Control released by ${modName}`);
+            return true;
+        }
+        return false;
+    }
+    
+    hasControl(modName) {
+        return this.currentOwner === modName;
+    }
+    
+    getCurrentOwner() {
+        return this.currentOwner;
+    }
 }
+
+window.AutoplayManager = window.AutoplayManager || new ControlManager('Autoplay Manager', {
+    originalMode: null,
+    isControlledByOther(modName) {
+        return this.currentOwner !== null && this.currentOwner !== modName;
+    }
+});
 
 let isAutomationEnabled = AUTOMATION_DISABLED;
 let isCurrentlyActive = false;
@@ -135,11 +128,6 @@ let lastMissingFunctionLog = 0;
 let functionRetryAttempts = 0;
 const MAX_FUNCTION_RETRY_ATTEMPTS = 3;
 const FUNCTION_RETRY_DELAY = 2000; // 2 seconds
-
-// Track if we triggered the current Better Boosted Maps session
-if (typeof window.staminaOptimizerTriggeredSession === 'undefined') {
-    window.staminaOptimizerTriggeredSession = false;
-}
 
 // ============================================================================
 // 3. STAMINA MONITORING FUNCTIONS
@@ -237,12 +225,6 @@ function hasAutoplayControl(modName) {
 // Check if Raid Hunter is currently active - Returns: True if active (boolean)
 function isRaidHunterActive() {
     try {
-        // Use coordination system if available
-        if (window.ModCoordination) {
-            return window.ModCoordination.isModActive('Raid Hunter');
-        }
-        
-        // Fallback to old method for backward compatibility
         if (window.raidHunterIsCurrentlyRaiding?.()) {
             return true;
         }
@@ -256,12 +238,6 @@ function isRaidHunterActive() {
 // Check if Better Boosted Maps is currently active - Returns: True if active (boolean)
 function isBoostedMapsActive() {
     try {
-        // Use coordination system if available
-        if (window.ModCoordination) {
-            return window.ModCoordination.isModActive('Better Boosted Maps');
-        }
-        
-        // Fallback to old method for backward compatibility
         const boostedState = getBetterBoostedMapsState();
         // Check the exposed state (Better Boosted Maps uses betterBoostedMapsState, not boostedMapsState)
         if (boostedState) {
@@ -317,12 +293,6 @@ function isBetterBoostedMapsEnabled() {
 // Check if Better Tasker is currently active - Returns: True if active (boolean)
 function isBetterTaskerActive() {
     try {
-        // Use coordination system if available
-        if (window.ModCoordination) {
-            return window.ModCoordination.isModActive('Better Tasker');
-        }
-        
-        // Fallback to old method for backward compatibility
         const state = window.betterTaskerState;
         if (!state || state.taskerState === 'disabled' || !state.taskerState) {
             return false;
@@ -350,6 +320,54 @@ function isAutoplayControlledByOther() {
         return false;
     }
     return true;
+}
+
+// Check if Better Boosted Maps is farming a valid boosted map - Returns: True if farming valid map (boolean)
+function isBoostedMapFarmingValid() {
+    try {
+        // Check if Better Boosted Maps is enabled and farming
+        const boostedState = window.betterBoostedMapsState;
+        if (!boostedState || !boostedState.enabled || !boostedState.isFarming) {
+            return false;
+        }
+        
+        // Check if there's current map info
+        if (!boostedState.currentMap) {
+            return false;
+        }
+        
+        // Load Better Boosted Maps settings
+        const settingsStr = localStorage.getItem('betterBoostedMapsSettings');
+        if (!settingsStr) {
+            return false;
+        }
+        
+        const settings = JSON.parse(settingsStr);
+        
+        // Check if the current map is enabled
+        const mapEnabled = settings.maps?.[boostedState.currentMap.roomId] !== false;
+        if (!mapEnabled) {
+            console.log('[Stamina Optimizer] Current boosted map is not enabled in Better Boosted Maps settings');
+            return false;
+        }
+        
+        // Check if the equipment is enabled
+        const equipmentName = boostedState.currentMap.equipmentName;
+        if (equipmentName) {
+            const equipId = equipmentName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            const equipEnabled = settings.equipment?.[equipId] !== false;
+            if (!equipEnabled) {
+                console.log('[Stamina Optimizer] Current boosted equipment is not enabled in Better Boosted Maps settings');
+                return false;
+            }
+        }
+        
+        console.log('[Stamina Optimizer] Valid boosted map farming detected - will not stop');
+        return true;
+    } catch (error) {
+        console.error('[Stamina Optimizer] Error checking boosted map validity:', error);
+        return false;
+    }
 }
 
 // Get reason why we cannot proceed (for logging) - Returns: Reason string or null (string|null)
@@ -406,14 +424,7 @@ function setStateFlag(flagName) {
 function releaseControlAndResetState() {
     isCurrentlyActive = false;
     wasInitiatedByMod = false;
-    window.staminaOptimizerTriggeredSession = false;
     window.AutoplayManager?.releaseControl('Stamina Optimizer');
-    
-    // Update coordination system state
-    if (window.ModCoordination) {
-        window.ModCoordination.updateModState('Stamina Optimizer', { active: false });
-    }
-    
     updateButton();
 }
 
@@ -480,12 +491,6 @@ function startAutoplay() {
         }
         isCurrentlyActive = true;
         wasInitiatedByMod = true;
-        
-        // Update coordination system state
-        if (window.ModCoordination) {
-            window.ModCoordination.updateModState('Stamina Optimizer', { active: true });
-        }
-        
         updateButton();
         return true;
     } catch (error) {
@@ -514,6 +519,8 @@ function createEscKeyEvent() {
 // Find and click the pause button to pause autoplay session
 async function pauseAutoplayWithButton() {
     try {
+        console.log('[Stamina Optimizer] Looking for pause button...');
+        
         const selectors = [
             'button:has(svg.lucide-pause)',
             'button.frame-1-red[class*="pause"]',
@@ -531,17 +538,22 @@ async function pauseAutoplayWithButton() {
                     const hasPauseIcon = secondButton.querySelector('svg.lucide-pause');
                     if (hasPauseIcon) {
                         button = secondButton;
+                        console.log('[Stamina Optimizer] Found pause button using structure fallback');
                     }
                 }
             }
         }
         if (button) {
+            console.log('[Stamina Optimizer] Found pause button, clicking to pause autoplay session...');
             document.dispatchEvent(createEscKeyEvent());
             await new Promise(resolve => setTimeout(resolve, PAUSE_BUTTON_CLICK_DELAY));
             button.click();
             await new Promise(resolve => setTimeout(resolve, PAUSE_BUTTON_UPDATE_DELAY));
+            console.log('[Stamina Optimizer] Pause button clicked successfully');
+            
             return true;
         } else {
+            console.log('[Stamina Optimizer] Pause button not found');
             return false;
         }
     } catch (error) {
@@ -550,38 +562,34 @@ async function pauseAutoplayWithButton() {
     }
 }
 
-// Stop autoplay - Uses pause button to stop session without changing mode
-// Can stop if we initiated it OR if we have control (took control to stop due to low stamina)
+// Stop autoplay (only if we initiated it) - Uses pause button to stop session without changing mode
 async function stopAutoplay() {
-    // Check if we have control (either we initiated it or we took control to stop it)
-    if (!window.AutoplayManager?.hasControl('Stamina Optimizer')) {
-        releaseControlAndResetState();
+    if (!wasInitiatedByMod || !isCurrentlyActive) {
+        console.log('[Stamina Optimizer] Not stopping - autoplay was not initiated by mod');
         return false;
     }
-    
-    // If we didn't initiate it but we have control, we took control to stop it (low stamina)
-    // So we should proceed with stopping
-    if (!wasInitiatedByMod && !isCurrentlyActive) {
-        // We have control but didn't initiate - this means we took control to stop
-        // Set flags so we can properly stop
-        isCurrentlyActive = true;
-        wasInitiatedByMod = false; // Keep false to indicate we didn't start it, but we're stopping it
-    }
-    
-    if (!isCurrentlyActive) {
+    if (!window.AutoplayManager?.hasControl('Stamina Optimizer')) {
+        console.log('[Stamina Optimizer] Not stopping - control lost');
+        releaseControlAndResetState();
         return false;
     }
     try {
         setStateFlag('isStoppingAutoplay');
         const boardContext = globalThis.state.board.getSnapshot().context;
         if (boardContext.mode === 'autoplay') {
-            await pauseAutoplayWithButton();
+            const paused = await pauseAutoplayWithButton();
+            if (paused) {
+                console.log('[Stamina Optimizer] Autoplay session paused using pause button');
+            } else {
+                console.log('[Stamina Optimizer] Pause button not found - falling back to mode change');
+                globalThis.state.board.send({ type: "setPlayMode", mode: "manual" });
+            }
         }
         
         releaseControlAndResetState();
         return true;
     } catch (error) {
-        console.error('[Stamina Optimizer] Error stopping:', error);
+        console.error('[Stamina Optimizer] Error stopping autoplay:', error);
         isStoppingAutoplay = false;
         return false;
     }
@@ -710,17 +718,16 @@ function startBoostedMapFarming() {
             console.log('[Stamina Optimizer] Better Boosted Maps is already farming');
             return;
         }
-        // Don't request control - let Better Boosted Maps take control
-        // But mark that we triggered it so we can stop it later if needed
+        if (!requestControlAndSetActive()) {
+            console.log('[Stamina Optimizer] Cannot start boosted map farming - autoplay control denied');
+            return;
+        }
         isStartingAutoplay = true;
+        console.log('[Stamina Optimizer] Requested autoplay control before triggering Better Boosted Maps');
         
         // Try to trigger the function
         if (triggerBetterBoostedMapsFunction()) {
             // Success - function was found and called
-            // Mark that we triggered this session (for stopping later)
-            window.staminaOptimizerTriggeredSession = true;
-            isStartingAutoplay = false;
-            console.log('[Stamina Optimizer] ▶️ Triggered Better Boosted Maps');
             return;
         }
         
@@ -734,16 +741,15 @@ function startBoostedMapFarming() {
             const retryTimeout = setTimeout(() => {
                 const index = otherTimeouts.indexOf(retryTimeout);
                 if (index > -1) otherTimeouts.splice(index, 1);
-                // Retry just the function lookup and call
+                // Retry just the function lookup and call (we already have control)
                 if (triggerBetterBoostedMapsFunction()) {
                     // Success on retry
                     console.log(`[Stamina Optimizer] ✅ Better Boosted Maps function found on retry ${functionRetryAttempts}`);
-                    window.staminaOptimizerTriggeredSession = true;
-                    isStartingAutoplay = false;
                     return;
                 }
-                // Still failed after retry
+                // Still failed after retry - release control
                 if (functionRetryAttempts >= MAX_FUNCTION_RETRY_ATTEMPTS) {
+                    releaseControlAndResetState();
                     isStartingAutoplay = false;
                     functionRetryAttempts = 0;
                 }
@@ -753,6 +759,7 @@ function startBoostedMapFarming() {
             return;
         } else {
             // Max retries exceeded - give up
+            releaseControlAndResetState();
             isStartingAutoplay = false;
             functionRetryAttempts = 0; // Reset for next time
             const timeSinceLastLog = now - lastMissingFunctionLog;
@@ -764,288 +771,24 @@ function startBoostedMapFarming() {
         }
     } catch (error) {
         console.error('[Stamina Optimizer] Error starting boosted map farming:', error);
-        isStartingAutoplay = false;
-    }
-}
-
-// Start Raid Hunter automation
-function startRaidHunter() {
-    try {
-        if (isPlayerInitiatedAutoplay()) {
-            console.log('[Stamina Optimizer] Autoplay is player-initiated - not starting Raid Hunter');
-            return;
-        }
-        
-        // Check if Raid Hunter is already active
-        if (isRaidHunterActive()) {
-            console.log('[Stamina Optimizer] Raid Hunter is already active - not interfering');
-            return;
-        }
-        
-        // Check if Raid Hunter is enabled
-        const raidHunterEnabled = localStorage.getItem('raidHunterAutomationEnabled');
-        if (raidHunterEnabled !== 'true') {
-            console.log('[Stamina Optimizer] Raid Hunter is not enabled - cannot start');
-            return;
-        }
-        
-        const currentOwner = window.AutoplayManager?.getCurrentOwner?.();
-        if (currentOwner === 'Raid Hunter') {
-            console.log('[Stamina Optimizer] Raid Hunter already has autoplay control');
-            return;
-        }
-        
-        // Check if there are raids available
-        try {
-            const raidState = globalThis.state?.raids?.getSnapshot?.();
-            const hasActiveRaids = raidState?.context?.list?.length > 0;
-            if (!hasActiveRaids) {
-                console.log('[Stamina Optimizer] No raids available - cannot start Raid Hunter');
-                return;
-            }
-        } catch (error) {
-            console.error('[Stamina Optimizer] Error checking raid state:', error);
-            return;
-        }
-        
-        if (!requestControlAndSetActive()) {
-            console.log('[Stamina Optimizer] Cannot start Raid Hunter - autoplay control denied');
-            return;
-        }
-        
-        // Raid Hunter will automatically check for raids when enabled
-        // We just need to ensure autoplay is running
-        try {
-            const boardContext = globalThis.state.board.getSnapshot().context;
-            const currentMode = boardContext.mode;
-            setStateFlag('isStartingAutoplay');
-            if (currentMode !== 'autoplay') {
-                globalThis.state.board.send({ type: "setPlayMode", mode: "autoplay" });
-                console.log('[Stamina Optimizer] Started autoplay for Raid Hunter');
-            }
-        } catch (error) {
-            console.error('[Stamina Optimizer] Error starting autoplay for Raid Hunter:', error);
-            releaseControlAndResetState();
-            isStartingAutoplay = false;
-        }
-    } catch (error) {
-        console.error('[Stamina Optimizer] Error starting Raid Hunter:', error);
         releaseControlAndResetState();
         isStartingAutoplay = false;
     }
 }
 
-// Start Better Tasker automation
-function startBetterTasker() {
-    try {
-        if (isPlayerInitiatedAutoplay()) {
-            console.log('[Stamina Optimizer] Autoplay is player-initiated - not starting Better Tasker');
-            return;
-        }
-        
-        // Check if Better Tasker is already active
-        if (isBetterTaskerActive()) {
-            console.log('[Stamina Optimizer] Better Tasker is already active - not interfering');
-            return;
-        }
-        
-        // Check if Better Tasker is enabled
-        const taskerState = window.betterTaskerState?.taskerState;
-        if (!taskerState || taskerState === 'disabled') {
-            console.log('[Stamina Optimizer] Better Tasker is not enabled - cannot start');
-            return;
-        }
-        
-        const currentOwner = window.AutoplayManager?.getCurrentOwner?.();
-        if (currentOwner === 'Better Tasker') {
-            console.log('[Stamina Optimizer] Better Tasker already has autoplay control');
-            return;
-        }
-        
-        // Try to start Better Tasker automation
-        const startAutomationFunction = findModFunction(
-            'startAutomation',
-            'better-tasker',
-            'betterTaskerState'
-        );
-        
-        if (!startAutomationFunction) {
-            console.log('[Stamina Optimizer] Better Tasker startAutomation function not found');
-            return;
-        }
-        
-        if (!requestControlAndSetActive()) {
-            console.log('[Stamina Optimizer] Cannot start Better Tasker - autoplay control denied');
-            return;
-        }
-        
-        isStartingAutoplay = true;
-        console.log('[Stamina Optimizer] Starting Better Tasker automation');
-        
-        // Start Better Tasker automation
-        try {
-            startAutomationFunction();
-            
-            // Ensure autoplay is running
-            const boardContext = globalThis.state.board.getSnapshot().context;
-            const currentMode = boardContext.mode;
-            if (currentMode !== 'autoplay') {
-                globalThis.state.board.send({ type: "setPlayMode", mode: "autoplay" });
-            }
-            
-            // Update coordination system state
-            if (window.ModCoordination) {
-                window.ModCoordination.updateModState('Stamina Optimizer', { active: true });
-            }
-            
-            updateButton();
-        } catch (error) {
-            console.error('[Stamina Optimizer] Error starting Better Tasker:', error);
-            releaseControlAndResetState();
-            isStartingAutoplay = false;
-        }
-    } catch (error) {
-        console.error('[Stamina Optimizer] Error starting Better Tasker:', error);
-        releaseControlAndResetState();
-        isStartingAutoplay = false;
-    }
-}
-
-// Start normal autoplay (when no other mod is controlling)
-function startNormalAutoplay() {
-    try {
-        if (isPlayerInitiatedAutoplay()) {
-            console.log('[Stamina Optimizer] Autoplay is player-initiated - not starting normal autoplay');
-            return;
-        }
-        
-        // Check if any mod is currently controlling autoplay
-        const currentOwner = window.AutoplayManager?.getCurrentOwner?.();
-        if (currentOwner && currentOwner !== 'Stamina Optimizer') {
-            console.log(`[Stamina Optimizer] Another mod (${currentOwner}) is controlling autoplay - not starting normal autoplay`);
-            return;
-        }
-        
-        // Check if any mod is active
-        if (isRaidHunterActive()) {
-            console.log('[Stamina Optimizer] Raid Hunter is active - not starting normal autoplay');
-            return;
-        }
-        if (isBetterTaskerActive()) {
-            console.log('[Stamina Optimizer] Better Tasker is active - not starting normal autoplay');
-            return;
-        }
-        if (isBoostedMapsActive()) {
-            console.log('[Stamina Optimizer] Better Boosted Maps is active - not starting normal autoplay');
-            return;
-        }
-        
-        // Check if autoplay is already running
-        try {
-            const boardContext = globalThis.state?.board?.getSnapshot()?.context;
-            if (boardContext?.mode === 'autoplay' && !isCurrentlyActive) {
-                console.log('[Stamina Optimizer] Autoplay is already running - not starting normal autoplay');
-                return;
-            }
-        } catch (error) {
-            // Ignore errors checking board state
-        }
-        
-        if (!requestControlAndSetActive()) {
-            console.log('[Stamina Optimizer] Cannot start normal autoplay - autoplay control denied');
-            return;
-        }
-        
-        // Start normal autoplay
-        try {
-            const boardContext = globalThis.state.board.getSnapshot().context;
-            const currentMode = boardContext.mode;
-            setStateFlag('isStartingAutoplay');
-            if (currentMode !== 'autoplay') {
-                globalThis.state.board.send({ type: "setPlayMode", mode: "autoplay" });
-                console.log('[Stamina Optimizer] Started normal autoplay');
-            }
-            
-            // Update coordination system state
-            if (window.ModCoordination) {
-                window.ModCoordination.updateModState('Stamina Optimizer', { active: true });
-            }
-            
-            updateButton();
-        } catch (error) {
-            console.error('[Stamina Optimizer] Error starting normal autoplay:', error);
-            releaseControlAndResetState();
-            isStartingAutoplay = false;
-        }
-    } catch (error) {
-        console.error('[Stamina Optimizer] Error starting normal autoplay:', error);
-        releaseControlAndResetState();
-        isStartingAutoplay = false;
-    }
-}
-
-// Start "all" - tries each mod in priority order until one succeeds
-function startAllMods() {
-    try {
-        if (isPlayerInitiatedAutoplay()) {
-            console.log('[Stamina Optimizer] Autoplay is player-initiated - not starting any mod');
-            return;
-        }
-        
-        // Try in priority order: Raid Hunter > Better Tasker > Better Boosted Maps
-        // Check Raid Hunter first (highest priority)
-        const raidHunterEnabled = localStorage.getItem('raidHunterAutomationEnabled');
-        if (raidHunterEnabled === 'true') {
-            try {
-                const raidState = globalThis.state?.raids?.getSnapshot?.();
-                const hasActiveRaids = raidState?.context?.list?.length > 0;
-                if (hasActiveRaids && !isRaidHunterActive()) {
-                    console.log('[Stamina Optimizer] Trying Raid Hunter first (highest priority)');
-                    startRaidHunter();
-                    return; // If Raid Hunter starts, we're done
-                }
-            } catch (error) {
-                console.error('[Stamina Optimizer] Error checking Raid Hunter:', error);
-            }
-        }
-        
-        // Try Better Tasker next
-        const taskerState = window.betterTaskerState?.taskerState;
-        if (taskerState && taskerState !== 'disabled' && !isBetterTaskerActive()) {
-            console.log('[Stamina Optimizer] Trying Better Tasker (second priority)');
-            startBetterTasker();
-            return; // If Better Tasker starts, we're done
-        }
-        
-        // Try Better Boosted Maps last
-        const boostedEnabled = isBetterBoostedMapsEnabled();
-        if (boostedEnabled && !isBoostedMapsActive()) {
-            console.log('[Stamina Optimizer] Trying Better Boosted Maps (lowest priority)');
-            startBoostedMapFarming();
-            return;
-        }
-        
-        console.log('[Stamina Optimizer] No mods available to start');
-    } catch (error) {
-        console.error('[Stamina Optimizer] Error starting all mods:', error);
-    }
-}
-
-// Execute the configured actions (only boosted maps)
+// Execute the configured action
 function executeAction() {
     const settings = loadSettings();
-    const actions = settings.actions || DEFAULT_ACTIONS;
+    const action = settings.action || DEFAULT_ACTION;
     
-    if (!Array.isArray(actions) || actions.length === 0) {
-        console.log('[Stamina Optimizer] No actions configured');
-        return;
-    }
+    console.log(`[Stamina Optimizer] Executing action: ${action}`);
     
-    console.log(`[Stamina Optimizer] Executing actions: ${actions.join(', ')}`);
-    
-    // Only boosted maps is supported
-    if (actions.includes('boosted-maps')) {
-        startBoostedMapFarming();
+    switch (action) {
+        case 'boosted-maps':
+            startBoostedMapFarming();
+            break;
+        default:
+            console.log(`[Stamina Optimizer] Action "${action}" not yet implemented`);
     }
 }
 
@@ -1064,6 +807,11 @@ function monitorStamina() {
     // Check if we're still in the grace period after allModsLoaded
     const now = Date.now();
     if (gracePeriodEndTime > 0 && now < gracePeriodEndTime) {
+        const remainingSeconds = Math.ceil((gracePeriodEndTime - now) / 1000);
+        // Only log at 10s, 5s, and when it ends
+        if (remainingSeconds === 10 || remainingSeconds === 5 || remainingSeconds === 1) {
+            console.log(`[Stamina Optimizer] ⏳ Waiting for mods to finish loading (${remainingSeconds}s remaining)...`);
+        }
         return;
     }
     
@@ -1080,37 +828,31 @@ function monitorStamina() {
             }
             if (!wasBestiaryRefillRecent()) {
                 if (canProceed()) {
-                console.log(`[Stamina Optimizer] ▶️ High stamina (${currentStamina}/${maxStamina}) - starting`);
+                console.log(`[Stamina Optimizer] Stamina (${currentStamina}) >= max (${maxStamina}) - executing action`);
                 executeAction();
                 updateButton();
+                } else {
+                    const reason = getCannotProceedReason();
+                    if (reason) {
+                        console.log(`[Stamina Optimizer] ⏸️ Stamina high but ${reason} - waiting`);
+                    }
                 }
             }
         }
     }
     if (currentStamina < minStamina) {
-        // Check if autoplay is currently running
-        try {
-            const boardContext = globalThis.state?.board?.getSnapshot()?.context;
-            const isAutoplayRunning = boardContext?.mode === 'autoplay';
-            
-            if (isAutoplayRunning) {
-                // Stop if we initiated/triggered the session
-                if (isCurrentlyActive && wasInitiatedByMod) {
-                    console.log(`[Stamina Optimizer] ⏹️ Low stamina (${currentStamina}/${minStamina}) - stopping`);
-                    // Request control to stop the session
-                    if (!window.AutoplayManager?.hasControl('Stamina Optimizer')) {
-                        if (!window.AutoplayManager?.requestControl('Stamina Optimizer')) {
-                            return;
-                        }
-                    }
-                    stopAutoplay().catch(error => {
-                        console.error('[Stamina Optimizer] Error stopping:', error);
-                    });
-                    updateButton();
-                }
+        if (isCurrentlyActive && wasInitiatedByMod) {
+            // Check if we're farming a valid boosted map - if so, don't stop
+            if (isBoostedMapFarmingValid()) {
+                console.log(`[Stamina Optimizer] ⏸️ Stamina (${currentStamina}) < min (${minStamina}) but farming valid boosted map - continuing`);
+                return;
             }
-        } catch (error) {
-            console.error('[Stamina Optimizer] Error checking autoplay state:', error);
+            
+            console.log(`[Stamina Optimizer] ⏹️ Stamina (${currentStamina}) < min (${minStamina}) - stopping`);
+            stopAutoplay().catch(error => {
+                console.error('[Stamina Optimizer] Error in stopAutoplay:', error);
+            });
+            updateButton();
         }
     }
 }
@@ -1124,6 +866,8 @@ function startStaminaMonitoring() {
     staminaCheckInterval = setInterval(() => {
         monitorStamina();
     }, STAMINA_CHECK_INTERVAL);
+    
+    console.log('[Stamina Optimizer] Stamina monitoring started');
 }
 
 // Stop stamina monitoring
@@ -1132,6 +876,8 @@ function stopStaminaMonitoring() {
         clearInterval(staminaCheckInterval);
         staminaCheckInterval = null;
     }
+    
+    console.log('[Stamina Optimizer] Stamina monitoring stopped');
 }
 
 // ============================================================================
@@ -1187,8 +933,6 @@ function startAutoplayStateMonitoring() {
                 if (!isAutoplay && !isCurrentlyActive && !wasInitiatedByMod && !isStoppingAutoplay && !isStartingAutoplay) {
                     // Reset detection flag when autoplay stops
                     hasLoggedAutoplayDetection = false;
-                    // Clear trigger flag when autoplay stops
-                    window.staminaOptimizerTriggeredSession = false;
                     if (isAutomationEnabled) {
                         setTimeout(() => monitorStamina(), 500);
                     }
@@ -1197,18 +941,62 @@ function startAutoplayStateMonitoring() {
                     console.log('[Stamina Optimizer] Raid Hunter took control - releasing our control');
                     releaseControlAndResetState();
                 }
-                // Check if Better Boosted Maps started a session we triggered
-                if (isAutoplay && !isCurrentlyActive && !wasInitiatedByMod && !isStartingAutoplay) {
-                    const timeSinceTrigger = Date.now() - (window.staminaOptimizerLastBoostedMapsTrigger || 0);
-                    const wasTriggeredByUs = window.staminaOptimizerTriggeredSession === true;
-                    
-                    // If we triggered Better Boosted Maps recently, claim responsibility for the session
-                    if (wasTriggeredByUs && timeSinceTrigger < BOOSTED_MAPS_TRIGGER_WINDOW) {
+                if (isAutoplay && window.AutoplayManager?.hasControl('Stamina Optimizer')) {
+                    if (!isCurrentlyActive || !wasInitiatedByMod) {
+                        console.log('[Stamina Optimizer] Autoplay started (via Better Boosted Maps) - recognizing as our own');
                         isCurrentlyActive = true;
                         wasInitiatedByMod = true;
                         updateButton();
-                        // Clear the trigger flag
-                        window.staminaOptimizerTriggeredSession = false;
+                    }
+                } else if (isAutoplay && !isCurrentlyActive && !wasInitiatedByMod && !isStartingAutoplay) {
+                    const timeSinceTrigger = Date.now() - (window.staminaOptimizerLastBoostedMapsTrigger || 0);
+                    if (timeSinceTrigger < BOOSTED_MAPS_TRIGGER_WINDOW) {
+                        if (!hasAutoplayControl('Raid Hunter') && requestControlAndSetActive()) {
+                            console.log('[Stamina Optimizer] Autoplay started after triggering Better Boosted Maps - claiming control');
+                        }
+                    } else {
+                        // Only log once on initialization to avoid spam, and only if it's unexpected
+                        if (!hasLoggedAutoplayDetection) {
+                            const settings = loadSettings();
+                            const action = settings.action || DEFAULT_ACTION;
+                            
+                            // Identify which mod (if any) is controlling autoplay
+                            const currentOwner = window.AutoplayManager?.getCurrentOwner?.();
+                            let ownerInfo = 'player';
+                            let isExpected = false;
+                            
+                            // Check if Better Boosted Maps is enabled (even if not actively farming yet)
+                            const boostedMapsEnabled = window.betterBoostedMapsState?.enabled === true;
+                            
+                            if (currentOwner) {
+                                ownerInfo = currentOwner;
+                                // If action is 'boosted-maps' and Better Boosted Maps has control, that's expected
+                                if (action === 'boosted-maps' && currentOwner === 'Better Boosted Maps') {
+                                    isExpected = true;
+                                }
+                            } else if (isBoostedMapsActive()) {
+                                ownerInfo = 'Better Boosted Maps (likely)';
+                                // If action is 'boosted-maps' and Better Boosted Maps is active, that's expected
+                                if (action === 'boosted-maps') {
+                                    isExpected = true;
+                                }
+                            } else if (action === 'boosted-maps' && boostedMapsEnabled) {
+                                // If action is 'boosted-maps' and Better Boosted Maps is enabled, 
+                                // and autoplay is running, it's likely Better Boosted Maps started it
+                                ownerInfo = 'Better Boosted Maps (likely)';
+                                isExpected = true;
+                            } else if (isRaidHunterActive()) {
+                                ownerInfo = 'Raid Hunter (likely)';
+                            } else if (isBetterTaskerActive()) {
+                                ownerInfo = 'Better Tasker (likely)';
+                            }
+                            
+                            // Only log if it's unexpected (not the intended behavior)
+                            if (!isExpected) {
+                                console.log(`[Stamina Optimizer] Autoplay is running (started by ${ownerInfo}) - will not interfere`);
+                            }
+                            hasLoggedAutoplayDetection = true;
+                        }
                     }
                 }
             } catch (error) {
@@ -1297,7 +1085,7 @@ let lastModalCall = 0;
 let modalCleanupObserver = null;
 
 const MODAL_WIDTH = 400;
-const MODAL_HEIGHT = 'auto';
+const MODAL_HEIGHT = 400;
 
 // Create styled input element
 function createStyledInput(type, id, value, style, attributes = {}) {
@@ -1503,7 +1291,7 @@ function createSettingsContent() {
         display: flex;
         flex-direction: column;
         width: 370px;
-        height: auto;
+        height: 400px;
         box-sizing: border-box;
         overflow-y: auto;
         background: url('https://bestiaryarena.com/_next/static/media/background-dark.95edca67.png') repeat;
@@ -1601,52 +1389,16 @@ function createSettingsContent() {
     );
     mainContainer.appendChild(minStaminaSetting);
     
-    // Action checkboxes section
-    const actionSection = document.createElement('div');
-    actionSection.style.cssText = `
-        margin-bottom: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    `;
-    
-    const actionLabel = document.createElement('label');
-    actionLabel.textContent = t('mods.staminaOptimizer.actionLabel');
-    actionLabel.className = 'pixel-font-16';
-    actionLabel.style.cssText = `
-        font-weight: bold;
-        color: ${COLOR_WHITE};
-        margin-bottom: 4px;
-    `;
-    actionSection.appendChild(actionLabel);
-    
-    const actionDescription = document.createElement('div');
-    actionDescription.textContent = t('mods.staminaOptimizer.actionDescription');
-    actionDescription.className = 'pixel-font-16';
-    actionDescription.style.cssText = `
-        font-size: 11px;
-        color: ${COLOR_GRAY};
-        font-style: italic;
-        margin-bottom: 8px;
-    `;
-    actionSection.appendChild(actionDescription);
-    
-    const currentActions = settings.actions || DEFAULT_ACTIONS;
-    const actionOptions = [
-        { value: 'boosted-maps', label: t('mods.staminaOptimizer.actionBoostedMaps') }
-    ];
-    
-    actionOptions.forEach(option => {
-        const checkboxSetting = createCheckboxSetting(
-            `action-${option.value}`,
-            option.label,
-            null,
-            Array.isArray(currentActions) && currentActions.includes(option.value)
-        );
-        actionSection.appendChild(checkboxSetting);
-    });
-    
-    mainContainer.appendChild(actionSection);
+    const actionSetting = createDropdownSetting(
+        'action',
+        t('mods.staminaOptimizer.actionLabel'),
+        t('mods.staminaOptimizer.actionDescription'),
+        settings.action || DEFAULT_ACTION,
+        [
+            { value: 'boosted-maps', label: t('mods.staminaOptimizer.actionBoostedMaps') }
+        ]
+    );
+    mainContainer.appendChild(actionSetting);
     
     const validationDiv = document.createElement('div');
     validationDiv.id = `${MOD_ID}-validation`;
@@ -1690,6 +1442,8 @@ function cleanupModal() {
         }
         modalInProgress = false;
         lastModalCall = 0;
+        
+        console.log('[Stamina Optimizer] Modal cleanup completed');
     } catch (error) {
         console.error('[Stamina Optimizer] Error during modal cleanup:', error);
     }
@@ -1754,9 +1508,9 @@ function openSettingsModal() {
                                     dialog.style.width = MODAL_WIDTH + 'px';
                                     dialog.style.minWidth = MODAL_WIDTH + 'px';
                                     dialog.style.maxWidth = MODAL_WIDTH + 'px';
-                                    dialog.style.height = 'auto';
-                                    dialog.style.minHeight = '200px';
-                                    dialog.style.maxHeight = '80vh';
+                                    dialog.style.height = MODAL_HEIGHT + 'px';
+                                    dialog.style.minHeight = MODAL_HEIGHT + 'px';
+                                    dialog.style.maxHeight = MODAL_HEIGHT + 'px';
                                     let footer = dialog.querySelector('div.flex.justify-end.gap-2');
                                     if (!footer) {
                                         const closeButton = Array.from(dialog.querySelectorAll('button')).find(
@@ -1803,7 +1557,7 @@ function openSettingsModal() {
 const DEFAULT_SETTINGS = {
     maxStamina: DEFAULT_MAX_STAMINA,
     minStamina: DEFAULT_MIN_STAMINA,
-    actions: DEFAULT_ACTIONS
+    action: DEFAULT_ACTION
 };
 
 // Load settings
@@ -1812,31 +1566,7 @@ function loadSettings() {
     if (saved) {
         try {
             const parsed = JSON.parse(saved);
-            const settings = { ...DEFAULT_SETTINGS, ...parsed };
-            
-            // Migrate from old single action to new actions array
-            if (settings.action && !settings.actions) {
-                // Always migrate to boosted-maps (only supported action now)
-                settings.actions = ['boosted-maps'];
-                // Remove old action field and save migrated settings
-                delete settings.action;
-                saveSettings(settings);
-            }
-            
-            // Ensure actions is an array and only contains boosted-maps
-            if (!Array.isArray(settings.actions) || settings.actions.length === 0) {
-                settings.actions = DEFAULT_ACTIONS;
-            } else {
-                // Filter out any non-boosted-maps actions (migration from old versions)
-                const validActions = settings.actions.filter(action => action === 'boosted-maps');
-                if (validActions.length === 0) {
-                    settings.actions = DEFAULT_ACTIONS;
-                } else {
-                    settings.actions = validActions;
-                }
-            }
-            
-            return settings;
+            return { ...DEFAULT_SETTINGS, ...parsed };
         } catch (error) {
             console.error('[Stamina Optimizer] Error parsing settings:', error);
             return DEFAULT_SETTINGS;
@@ -1849,6 +1579,7 @@ function loadSettings() {
 function saveSettings(settings) {
     try {
         localStorage.setItem(`${MOD_ID}Settings`, JSON.stringify(settings));
+        console.log('[Stamina Optimizer] Settings saved');
     } catch (error) {
         console.error('[Stamina Optimizer] Error saving settings:', error);
     }
@@ -1860,6 +1591,7 @@ function autoSaveSettings() {
         const settings = {};
         const maxStaminaInput = document.getElementById('maxStamina');
         const minStaminaInput = document.getElementById('minStamina');
+        const actionSelect = document.getElementById('action');
         
         if (maxStaminaInput) {
             const maxStamina = parseInt(maxStaminaInput.value);
@@ -1885,26 +1617,9 @@ function autoSaveSettings() {
             }
         }
         
-        // Collect selected actions from checkboxes
-        const actions = [];
-        const actionCheckboxes = [
-            { id: 'action-boosted-maps', value: 'boosted-maps' }
-        ];
-        
-        actionCheckboxes.forEach(({ id, value }) => {
-            const checkbox = document.getElementById(id);
-            if (checkbox && checkbox.checked) {
-                actions.push(value);
-            }
-        });
-        
-        // Ensure at least one action is selected
-        if (actions.length === 0) {
-            showValidationMessage(t('mods.staminaOptimizer.validationAtLeastOneAction'));
-            return;
+        if (actionSelect) {
+            settings.action = actionSelect.value;
         }
-        
-        settings.actions = actions;
         
         saveSettings(settings);
         hideValidationMessage();
@@ -1920,6 +1635,7 @@ function loadAndApplySettings() {
         
         const maxStaminaInput = document.getElementById('maxStamina');
         const minStaminaInput = document.getElementById('minStamina');
+        const actionSelect = document.getElementById('action');
         
         if (maxStaminaInput) {
             maxStaminaInput.value = settings.maxStamina || DEFAULT_MAX_STAMINA;
@@ -1929,25 +1645,9 @@ function loadAndApplySettings() {
             minStaminaInput.value = settings.minStamina || DEFAULT_MIN_STAMINA;
         }
         
-        // Handle migration from old single action to new actions array
-        let currentActions = settings.actions || DEFAULT_ACTIONS;
-        // Only boosted-maps is supported now
-        currentActions = currentActions.filter(action => action === 'boosted-maps');
-        if (currentActions.length === 0) {
-            currentActions = DEFAULT_ACTIONS;
+        if (actionSelect) {
+            actionSelect.value = settings.action || DEFAULT_ACTION;
         }
-        
-        // Apply action checkboxes
-        const actionCheckboxes = [
-            { id: 'action-boosted-maps', value: 'boosted-maps' }
-        ];
-        
-        actionCheckboxes.forEach(({ id, value }) => {
-            const checkbox = document.getElementById(id);
-            if (checkbox) {
-                checkbox.checked = Array.isArray(currentActions) && currentActions.includes(value);
-            }
-        });
     } catch (error) {
         console.error('[Stamina Optimizer] Error loading and applying settings:', error);
     }
@@ -1980,6 +1680,7 @@ function loadAutomationState() {
     if (saved !== null) {
         try {
             isAutomationEnabled = JSON.parse(saved);
+            console.log('[Stamina Optimizer] Loaded automation state:', isAutomationEnabled);
         } catch (error) {
             console.error('[Stamina Optimizer] Error parsing automation state:', error);
             isAutomationEnabled = AUTOMATION_DISABLED;
@@ -1990,6 +1691,7 @@ function loadAutomationState() {
 // Save automation state
 function saveAutomationState() {
     localStorage.setItem(`${MOD_ID}AutomationEnabled`, JSON.stringify(isAutomationEnabled));
+    console.log('[Stamina Optimizer] Automation state saved');
 }
 
 // Toggle automation
@@ -1998,23 +1700,15 @@ function toggleAutomation() {
     saveAutomationState();
     updateButton();
     
-    // Update coordination system state
-    if (window.ModCoordination) {
-        window.ModCoordination.updateModState('Stamina Optimizer', { enabled: isAutomationEnabled });
-    }
-    
     if (isAutomationEnabled) {
+        console.log('[Stamina Optimizer] Automation enabled');
         startStaminaMonitoring();
         startAutoplayStateMonitoring();
         setupBestiaryRefillMonitoring();
     } else {
+        console.log('[Stamina Optimizer] Automation disabled');
         stopStaminaMonitoring();
         stopAutoplayStateMonitoring();
-        
-        // Update coordination system state
-        if (window.ModCoordination) {
-            window.ModCoordination.updateModState('Stamina Optimizer', { active: false });
-        }
         
         // Stop autoplay if we initiated it
         if (isCurrentlyActive && wasInitiatedByMod) {
@@ -2046,13 +1740,18 @@ function init() {
         setupBestiaryRefillMonitoring();
     }
     
+    console.log('[Stamina Optimizer] Initialized - waiting for allModsLoaded signal');
+    
     // Fallback: if allModsLoaded signal is never received, set grace period after max wait time
     const fallbackTimeout = setTimeout(() => {
         if (!allModsLoaded) {
+            console.warn('[Stamina Optimizer] allModsLoaded signal not received after timeout - setting grace period anyway');
             allModsLoaded = true;
             gracePeriodEndTime = Date.now() + MODS_LOADING_GRACE_PERIOD;
+            console.log(`[Stamina Optimizer] Grace period started (fallback) - will wait ${MODS_LOADING_GRACE_PERIOD / 1000}s before allowing actions`);
             
             const gracePeriodTimeout = setTimeout(() => {
+                console.log('[Stamina Optimizer] Grace period ended - now allowing actions');
                 const index = otherTimeouts.indexOf(gracePeriodTimeout);
                 if (index > -1) otherTimeouts.splice(index, 1);
             }, MODS_LOADING_GRACE_PERIOD);
@@ -2066,6 +1765,7 @@ function init() {
 
 // Start automation after all mods are loaded
 function startAutomation() {
+    console.log('[Stamina Optimizer] Starting automation after allModsLoaded signal');
     if (isAutomationEnabled) {
         updateButton();
     }
@@ -2075,8 +1775,12 @@ function startAutomation() {
 let windowMessageHandler = (event) => {
     if (event.source !== window) return;
     if (event.data?.from === 'LOCAL_MODS_LOADER' && event.data?.action === 'allModsLoaded') {
+        console.log('[Stamina Optimizer] Received allModsLoaded signal');
         allModsLoaded = true;
+        
+        // Set grace period end time to allow other mods to initialize
         gracePeriodEndTime = Date.now() + MODS_LOADING_GRACE_PERIOD;
+        console.log(`[Stamina Optimizer] Grace period started - will wait ${MODS_LOADING_GRACE_PERIOD / 1000}s before allowing actions`);
         
         const timeout = setTimeout(() => {
             startAutomation();
@@ -2085,7 +1789,9 @@ let windowMessageHandler = (event) => {
         }, 1500);
         otherTimeouts.push(timeout);
         
+        // Log when grace period ends
         const gracePeriodTimeout = setTimeout(() => {
+            console.log('[Stamina Optimizer] ✅ Grace period ended - ready for actions');
             const index = otherTimeouts.indexOf(gracePeriodTimeout);
             if (index > -1) otherTimeouts.splice(index, 1);
         }, MODS_LOADING_GRACE_PERIOD);
@@ -2128,20 +1834,15 @@ function cleanupStaminaOptimizer() {
             window.removeEventListener('message', windowMessageHandler);
             windowMessageHandler = null;
         }
-        
-        // Unregister from coordination system
-        if (window.ModCoordination) {
-            window.ModCoordination.unregisterMod('Stamina Optimizer');
-        }
-        
         delete window.__staminaOptimizerLoaded;
         delete window.staminaOptimizerLastBoostedMapsTrigger;
         delete window.staminaOptimizerIsActive;
         delete window.staminaOptimizerAutoSaveIndicator;
-        delete window.staminaOptimizerTriggeredSession;
         if (api && api.ui && api.ui.removeButton) {
             api.ui.removeButton(BUTTON_ID);
         }
+        
+        console.log('[Stamina Optimizer] Cleanup completed');
     } catch (error) {
         console.error('[Stamina Optimizer] Error during cleanup:', error);
     }
@@ -2159,13 +1860,3 @@ if (typeof context !== 'undefined') {
 }
 
 window.staminaOptimizerIsActive = () => isCurrentlyActive;
-
-// Check if Stamina Optimizer would block starting autoplay (stamina is low)
-// modName: Name of the mod requesting autoplay (optional) - only blocks Better Boosted Maps
-// NOTE: This should return false to allow Better Boosted Maps to start
-// Stamina Optimizer will stop it later if stamina gets too low
-window.staminaOptimizerWouldBlock = (modName = null) => {
-    // Never block - let Better Boosted Maps start
-    // We'll stop it later if stamina drops below minimum
-    return false;
-};

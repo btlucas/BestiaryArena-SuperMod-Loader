@@ -318,12 +318,28 @@ function startTracking() {
   }
   
   try {
+    // Check if game state is ready
+    if (!globalThis.state || !globalThis.state.board || !globalThis.state.board.on) {
+      console.log(LOG_PREFIX, 'Game state not ready for tick tracking, retrying in 2s...');
+      setTimeout(() => {
+        if (isTracking) {
+          startTracking();
+        }
+      }, 2000);
+      return;
+    }
+    
     // Always ensure we have the newGame listener after reloads
     if (!newGameListenerRegistered) {
       // Listen for new game events to subscribe to onGameEnd
       globalThis.state.board.on('newGame', (event) => {
         // Skip if tracking is disabled at the moment
         if (!isTracking) return;
+        
+        // Skip if Board Analyzer or Manual Runner is running
+        if (window.__modCoordination?.boardAnalyzerRunning || window.__modCoordination?.manualRunnerActive) {
+          return;
+        }
 
         console.log(LOG_PREFIX, 'New game event detected');
       

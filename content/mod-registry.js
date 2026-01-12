@@ -21,7 +21,6 @@
 
 // Database mods - core functionality mods that load first
 export const DATABASE_MODS = [
-  'Welcome.js',
   'inventory-database.js',
   'creature-database.js',
   'equipment-database.js',
@@ -55,6 +54,7 @@ export const SUPER_MODS = [
   'Better Forge.js',
   'Better Highscores.js',
   'Better Hy\'genie.js',
+  'Better Rune Recycler.js',
   'Better Setups.js',
   'Better Tasker.js',
   'Better Yasir.js',
@@ -69,16 +69,8 @@ export const SUPER_MODS = [
   'Stamina Optimizer.js'
 ];
 
-// OT mods - community/social mods
-export const OT_MODS = [
-  'Quests.js',
-  'Guilds.js',
-  'VIP List.js'
-];
-
 // Mods that are enabled by default for new users
 export const DEFAULT_ENABLED_MODS = [
-  'database/Welcome.js',
   'database/inventory-database.js',
   'database/creature-database.js',
   'database/equipment-database.js',
@@ -104,15 +96,11 @@ export const DEFAULT_ENABLED_MODS = [
 
 // Mods that should be hidden from the UI (utility/system mods)
 export const HIDDEN_MODS = [
-  'Welcome.js',
   'inventory-database.js',
   'creature-database.js',
   'equipment-database.js',
   'maps-database.js',
-  'playereq-database.js',
-  'Mod Settings.js',
-  'RunTracker.js',
-  'Outfiter.js'
+  'playereq-database.js'
 ];
 
 /**
@@ -162,7 +150,7 @@ export function isDefaultEnabled(modPath) {
 
 /**
  * Check if a mod should be hidden from UI
- * @param {string} modName - Name of the mod file (e.g., "Welcome.js")
+ * @param {string} modName - Name of the mod file (e.g., "inventory-database.js")
  * @returns {boolean} True if mod should be hidden
  */
 export function isHiddenMod(modName) {

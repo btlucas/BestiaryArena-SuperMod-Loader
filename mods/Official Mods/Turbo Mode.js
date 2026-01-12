@@ -17,7 +17,9 @@ if (!window.__turboState) {
     lastKnownTick: -1,
     timerSubscribed: false,
     gameControlsObserver: null,
-    speedupSubscription: null
+    speedupSubscription: null,
+    enable: null,  // Will be set after functions are defined
+    disable: null  // Will be set after functions are defined
   };
 }
 
@@ -253,6 +255,11 @@ function subscribeToGameTimer() {
 
 // Try to create tick display element
 function tryInitTickDisplay() {
+  // Skip if Board Analyzer or Manual Runner is running
+  if (window.__modCoordination?.boardAnalyzerRunning || window.__modCoordination?.manualRunnerActive) {
+    return false;
+  }
+  
   const container = document.querySelector('.flex.flex-col.items-end.overflow-hidden');
   if (!container || document.getElementById('mb-game-timer')) return false;
   
@@ -587,6 +594,10 @@ if (turboState.active) {
 setTimeout(watchForGameControls, 1000);
 
   console.log('Turbo Mod initialization complete');
+
+// Expose enable/disable functions in turboState for other mods to use
+window.__turboState.enable = enableTurbo;
+window.__turboState.disable = disableTurbo;
 
 // Export control functions
 exports = {

@@ -5864,6 +5864,11 @@ function createAutoplayAnalyzerPanel() {
             clearInterval(autoSaveIntervalId);
         }
         autoSaveIntervalId = setInterval(() => {
+            // Skip auto-save if Board Analyzer or Manual Runner is running
+            if (window.__modCoordination?.boardAnalyzerRunning || window.__modCoordination?.manualRunnerActive) {
+                return;
+            }
+            
             if (HuntAnalyzerState.data.sessions.length > 0) {
                 saveHuntAnalyzerData();
                 console.log('[Hunt Analyzer] Periodic auto-save completed');
@@ -5933,6 +5938,11 @@ function getSmoothedRate(actualRate, elapsedTimeMs) {
 // Updates the display in the Hunt Analyzer Mod panel with the current loot, creature drops,
 // autoplay session count, and live drop rates.
 function updatePanelDisplay() {
+    // Skip update if Board Analyzer or Manual Runner is running
+    if (window.__modCoordination?.boardAnalyzerRunning || window.__modCoordination?.manualRunnerActive) {
+        return;
+    }
+    
     const now = Date.now();
     const shouldLog = (now - lastUpdateLogTime) > CONFIG.UPDATE_LOG_THROTTLE;
     
@@ -6813,7 +6823,7 @@ function savePanelSettings(panel) {
         // Save configuration using the mod loader's system
         api.service.updateScriptConfig(context.hash, config);
         
-        // Also save to localStorage (like VIP List.js) so it persists across config exports/imports
+        // Also save to localStorage so it persists across config exports/imports
         localStorage.setItem(HUNT_ANALYZER_PANEL_SETTINGS_KEY, JSON.stringify(settings));
         console.log('[Hunt Analyzer] Panel settings saved:', settings);
     } catch (error) {
@@ -6823,7 +6833,7 @@ function savePanelSettings(panel) {
 
 function loadPanelSettings() {
     try {
-        // Try to load from localStorage first (like VIP List.js)
+        // Try to load from localStorage first
         const saved = localStorage.getItem(HUNT_ANALYZER_PANEL_SETTINGS_KEY);
         if (saved) {
             const settings = JSON.parse(saved);
