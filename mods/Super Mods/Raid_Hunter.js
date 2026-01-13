@@ -534,11 +534,7 @@ const EVENT_TEXTS = [
     'Poacher Cave (Bear)',
     'Poacher Cave (Wolf)',
     'Dwarven Bank Heist',
-    'An Arcanist Ritual',
-    'Ruprecht\'s Hut',
-    'Jolly Axeman Tavern',
-    'Dog Raceway',
-    'White Wave Cellar'
+    'An Arcanist Ritual'
 ];
 
 // Event to room ID mapping (FALLBACK ONLY - game state API is used first)
@@ -559,19 +555,11 @@ const EVENT_TO_ROOM_MAPPING = {
     'Poacher Cave (Bear)': 'kpob',
     'Poacher Cave (Wolf)': 'kpow',
     'Dwarven Bank Heist': 'vbank',
-    'An Arcanist Ritual': 'vdhar',
-    'Ruprecht\'s Hut': 'fxmas',
-    'Jolly Axeman Tavern': 'kxmas',
-    'Dog Raceway': 'vxmas',
-    'White Wave Cellar': 'crxmas'
+    'An Arcanist Ritual': 'vdhar'
 };
 
 // Temporary event raids that should show the "Event" badge in UI
 const TEMPORARY_EVENT_RAIDS = [
-    'Ruprecht\'s Hut',
-    'Jolly Axeman Tavern',
-    'Dog Raceway',
-    'White Wave Cellar'
 ];
 
 // ============================================================================
@@ -5121,14 +5109,12 @@ function createRaidMapSelection() {
         'Carlin': [
             'Buzzing Madness',
             'Monastery Catacombs',
-            'Ghostlands Boneyard',
-            'White Wave Cellar'
+            'Ghostlands Boneyard'
         ],
         'Folda': [
             'Permafrosted Hole',
             'Jammed Mailbox',
-            'Frosted Bunker',
-            'Ruprecht\'s Hut'
+            'Frosted Bunker'
         ],
         'Ab\'Dendriel': [
             'Hedge Maze Trap',
@@ -5139,13 +5125,11 @@ function createRaidMapSelection() {
         ],
         'Kazordoon': [
             'Poacher Cave (Bear)',
-            'Poacher Cave (Wolf)',
-            'Jolly Axeman Tavern'
+            'Poacher Cave (Wolf)'
         ],
         'Venore': [
             'Dwarven Bank Heist',
-            'An Arcanist Ritual',
-            'Dog Raceway'
+            'An Arcanist Ritual'
         ]
     };
     
