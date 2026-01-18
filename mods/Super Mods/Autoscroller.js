@@ -1,6 +1,11 @@
 // =======================
 // Autoscroller.js - Bestiary Arena Auto Scroll Mod
 // =======================
+// 
+// To enable special event scrolls, set the feature flags below to true:
+// - SHOW_CHROMATIC_SCROLL: Enables Chromatic Scroll (T6) - Halloween Event
+// - SHOW_FESTIVE_SCROLL: Enables Festive Scroll (T7) - Christmas Event
+//
 (function() {
   
 // =======================
@@ -8,6 +13,19 @@
 // =======================
   const defaultConfig = { enabled: true };
   const config = Object.assign({}, defaultConfig, context?.config);
+  
+  // Feature flags for special event scrolls
+  const FEATURE_FLAGS = {
+    SHOW_CHROMATIC_SCROLL: false,  // Set to true during Halloween Event
+    SHOW_FESTIVE_SCROLL: false     // Set to true during Christmas Event
+  };
+  
+  // Helper function to get maximum visible scroll tier
+  function getMaxVisibleScrollTier() {
+    if (FEATURE_FLAGS.SHOW_FESTIVE_SCROLL) return 7;
+    if (FEATURE_FLAGS.SHOW_CHROMATIC_SCROLL) return 6;
+    return 5; // Default: only show T1-T5
+  }
   
   const PERFORMANCE = {
     DOM_CACHE_TIMEOUT: 1000,
@@ -37,7 +55,7 @@
   // Import official inventory data from centralized database
   const inventoryDB = (typeof window !== 'undefined' && window.inventoryDatabase) || {};
   const SCROLL_KEYS = inventoryDB.variants?.['Summon Scrolls'] || 
-    ['summonScroll1', 'summonScroll2', 'summonScroll3', 'summonScroll4', 'summonScroll5'];
+    ['summonScroll1', 'summonScroll2', 'summonScroll3', 'summonScroll4', 'summonScroll5', 'summonScroll6', 'summonScroll7'];
   
   const SCROLL_CONFIG = {
     SUMMON_SCROLL_API_URL: 'https://bestiaryarena.com/api/trpc/inventory.summonScroll?batch=1',
@@ -47,7 +65,9 @@
       GREEN: 2,
       BLUE: 3,
       PURPLE: 4,
-      YELLOW: 5
+      YELLOW: 5,
+      CHROMATIC: 6,
+      FESTIVE: 7
     },
     // Custom UI colors optimized for Autoscroller interface readability
     // Official game rarity colors: inventoryDB.rarityColors = {'1': '#9d9d9d', '2': '#1eff00', '3': '#0070dd', '4': '#a335ee', '5': '#ff8000'}
@@ -56,6 +76,8 @@
     DEFAULT_TIER_TARGETS: [0, 5, 4, 3, 2],
     // Tier thresholds based on total stats (HP + AD + AP + Armor + MR)
     TIER_THRESHOLDS: {
+      TIER_7: 95,  // Festive/Legendary
+      TIER_6: 90,  // Chromatic/Mythic
       TIER_5: 80,  // Yellow/Exceptional
       TIER_4: 70,  // Purple/Superior
       TIER_3: 60,  // Blue/Rare
@@ -1109,6 +1131,8 @@
                    (monster.magicResist || 0);
     
     const thresholds = SCROLL_CONFIG.TIER_THRESHOLDS;
+    if (statSum >= thresholds.TIER_7) return 7;
+    if (statSum >= thresholds.TIER_6) return 6;
     if (statSum >= thresholds.TIER_5) return 5;
     if (statSum >= thresholds.TIER_4) return 4;
     if (statSum >= thresholds.TIER_3) return 3;
@@ -1117,7 +1141,12 @@
   }
   
   function isShinyHuntMode() {
-    return autosellNonSelected && selectedCreatures.length === 0 && selectedScrollTier === 5;
+    const maxTier = getMaxVisibleScrollTier();
+    // Shiny hunt mode works with T5+ scrolls that are currently visible
+    if (selectedScrollTier === 5) return autosellNonSelected && selectedCreatures.length === 0;
+    if (selectedScrollTier === 6 && FEATURE_FLAGS.SHOW_CHROMATIC_SCROLL) return autosellNonSelected && selectedCreatures.length === 0;
+    if (selectedScrollTier === 7 && FEATURE_FLAGS.SHOW_FESTIVE_SCROLL) return autosellNonSelected && selectedCreatures.length === 0;
+    return false;
   }
   
   /**
@@ -2295,6 +2324,12 @@
       // Load saved state first
       loadStateFromStorage();
       
+      // Ensure selectedScrollTier doesn't exceed maximum visible tier
+      const maxTier = getMaxVisibleScrollTier();
+      if (selectedScrollTier > maxTier) {
+        selectedScrollTier = maxTier;
+      }
+      
       let availableCreatures = [...getAllCreatures()];
       // When reopening the modal, respect already selected creatures:
       // 1) Deduplicate any prior selections
@@ -2529,7 +2564,7 @@
           });
           input.className = 'tier-input';
           input.min = '0';
-          const defaultValues = [0, 5, 4, 3, 2];
+          const defaultValues = [0, 5, 4, 3, 2, 1, 1];
           input.value = stopConditions.tierTargets[index] || defaultValues[index];
           
           const creatureText = document.createElement('span');
@@ -2786,7 +2821,7 @@
           selectedCreatures.forEach(creatureName => {
             const creatureRow = document.createElement('div');
             creatureRow.style.display = 'grid';
-            creatureRow.style.gridTemplateColumns = '16px 30px 1fr 20px 20px 20px 20px 20px';
+            creatureRow.style.gridTemplateColumns = '16px 30px 1fr 20px 20px 20px 20px 20px 20px 20px';
             creatureRow.style.gap = '1px';
             creatureRow.style.padding = '2px 4px';
             creatureRow.style.alignItems = 'center';
@@ -2872,7 +2907,7 @@
             nameCell.style.whiteSpace = 'nowrap';
             creatureRow.appendChild(nameCell);
             
-            const tierColors = ['#888888', '#4ade80', '#60a5fa', '#a78bfa', '#fbbf24'];
+            const tierColors = ['#888888', '#4ade80', '#60a5fa', '#a78bfa', '#fbbf24', '#00d4ff', '#ff1493'];
             tierCounts.forEach((count, index) => {
               const countCell = document.createElement('div');
               countCell.textContent = count;
@@ -3092,7 +3127,8 @@
         row.style.height = '50%';
         row.style.flex = '0 0 50%';
         
-        for (let i = 1; i <= 5; i++) {
+        const maxTier = getMaxVisibleScrollTier();
+        for (let i = 1; i <= maxTier; i++) {
           const key = `summonScroll${i}`;
           const count = inventory[key] || 0;
           
@@ -3463,8 +3499,11 @@
     
     let targetButton = null;
     
-    // Look for summon scrolls in descending tier order (T6, T5, T4, T3, T2, T1)
-    const tierOrder = ['summonscroll6.png', 'summonscroll5.png', 'summonscroll4.png', 'summonscroll3.png', 'summonscroll2.png', 'summonscroll1.png'];
+    // Look for summon scrolls in descending tier order based on visible scrolls
+    const tierOrder = [];
+    if (FEATURE_FLAGS.SHOW_FESTIVE_SCROLL) tierOrder.push('summonscroll7.png');
+    if (FEATURE_FLAGS.SHOW_CHROMATIC_SCROLL) tierOrder.push('summonscroll6.png');
+    tierOrder.push('summonscroll5.png', 'summonscroll4.png', 'summonscroll3.png', 'summonscroll2.png', 'summonscroll1.png');
     
     // Search through ALL buttons to find summon scrolls
     const summonScrollButtonsFound = [];

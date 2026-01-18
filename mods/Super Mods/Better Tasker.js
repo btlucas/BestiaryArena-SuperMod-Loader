@@ -1206,7 +1206,7 @@ function isRaidHunterRaiding() {
                         return false;
                     }
                     
-                    // PRIORITY CHECK: Raid_Hunter should process ALL high-priority raids (active AND waiting) before Better Tasker proceeds
+                    // PRIORITY CHECK: Raid_Hunter should process ALL high/medium priority raids (active AND waiting) before Better Tasker proceeds
                     // Check if Raid Hunter is actively raiding
                     const raidHunterActuallyRaiding = (window.raidHunterIsCurrentlyRaiding && window.raidHunterIsCurrentlyRaiding());
                     if (raidHunterActuallyRaiding) {
@@ -1230,22 +1230,25 @@ function isRaidHunterRaiding() {
                         }
                     }
                     
-                    // Check if there are ANY enabled HIGH priority raids waiting (not just actively being raided)
-                    // Raid_Hunter should process ALL high-priority raids in queue before Better Tasker proceeds
+                    // Check if there are ANY enabled HIGH or MEDIUM priority raids waiting (not just actively being raided)
+                    // Raid_Hunter should process ALL HIGH/MEDIUM raids before Better Tasker proceeds
                     const hasEnabledHighPriorityRaid = (window.raidHunterHasEnabledHighPriorityRaid && window.raidHunterHasEnabledHighPriorityRaid());
-                    if (hasEnabledHighPriorityRaid) {
-                        console.log('[Better Tasker] High-priority raids available (active or waiting) - yielding control to let Raid_Hunter process entire queue');
+                    const hasEnabledMediumPriorityRaid = (window.raidHunterHasEnabledMediumPriorityRaid && window.raidHunterHasEnabledMediumPriorityRaid());
+                    
+                    if (hasEnabledHighPriorityRaid || hasEnabledMediumPriorityRaid) {
+                        const priorityType = hasEnabledHighPriorityRaid ? 'HIGH' : 'MEDIUM';
+                        console.log(`[Better Tasker] ${priorityType} priority raids available (active or waiting) - yielding control to let Raid_Hunter process entire queue`);
                         // Give Raid Hunter a chance to claim control (especially after foreground transitions)
                         const now = Date.now();
                         if (!lastRaidHunterCheckTime) {
                             lastRaidHunterCheckTime = now;
-                            console.log('[Better Tasker] Enabled HIGH priority raids available - waiting for Raid Hunter to claim control...');
+                            console.log(`[Better Tasker] Enabled ${priorityType} priority raids available - waiting for Raid Hunter to claim control...`);
                         }
                         
                         const timeSinceFirstCheck = now - lastRaidHunterCheckTime;
                         if (timeSinceFirstCheck < 10000) { // Wait up to 10 seconds
                             console.log(`[Better Tasker] Still waiting for Raid Hunter to claim control... (${Math.round(timeSinceFirstCheck/1000)}s)`);
-                            return true; // Continue yielding until Raid_Hunter processes all high-priority raids
+                            return true; // Continue yielding until Raid_Hunter processes all high/medium priority raids
                         } else if (timeSinceFirstCheck < 60000) { // Maximum wait time: 60 seconds total
                             // After initial timeout, keep yielding ONLY if Raid Hunter is actively raiding
                             // This prevents stuck states where raids are available but not being processed
@@ -1265,7 +1268,7 @@ function isRaidHunterRaiding() {
                         }
                     }
                     
-                    // Only proceed if there are NO high-priority raids (only low-priority or no raids at all)
+                    // Only proceed if there are NO high/medium priority raids (only low-priority or no raids at all)
                     // Check if we have an active task in the quest log
                     let hasActiveTask = false;
                     try {
@@ -1277,7 +1280,7 @@ function isRaidHunterRaiding() {
                     }
                     
                     if (hasActiveTask) {
-                        console.log('[Better Tasker] ✅ Better Tasker has ACTIVE TASK - proceeding (no high-priority raids available)');
+                        console.log('[Better Tasker] ✅ Better Tasker has ACTIVE TASK - proceeding (no high/medium priority raids available)');
                         lastRaidHunterCheckTime = null; // Reset timer
                         return false; // Proceed with task automation
                     }
@@ -1297,10 +1300,10 @@ function isRaidHunterRaiding() {
                         }
                     }
                     
-                    // No high-priority raids available and no active task - no blocking conditions
+                    // No high/medium priority raids available and no active task - no blocking conditions
                     // (This handles the case where only low-priority raids exist or no raids at all)
                     lastRaidHunterCheckTime = null; // Reset timer
-                    return false; // Proceed - no high-priority raids to wait for
+                    return false; // Proceed - no high/medium priority raids to wait for
                 }
             } else {
                 console.log('[Better Tasker] Raid state not available - assuming no active raids');
@@ -3683,9 +3686,9 @@ function isQuestBlipAvailable() {
 // Navigate to suggested map and start autoplay using API
 async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null) {
     try {
-        // CRITICAL: Check if Raid Hunter is actively raiding BEFORE doing anything (HIGH priority raids take precedence)
+        // CRITICAL: Check if Raid Hunter is actively raiding BEFORE doing anything (HIGH/MEDIUM priority raids take precedence)
         if (isRaidHunterRaiding()) {
-            console.log('[Better Tasker] Raid Hunter is actively raiding HIGH priority raid - aborting navigation (HIGH priority raid takes precedence)');
+            console.log('[Better Tasker] Raid Hunter is actively raiding (HIGH or MEDIUM priority) - aborting navigation');
             return false;
         }
         
@@ -4494,6 +4497,12 @@ function isElementVisible(el) {
 
 // Ensures autoplay mode is enabled with coordination
 function ensureAutoplayMode() {
+    // CRITICAL: Check if Raid Hunter is actively raiding (HIGH or MEDIUM priority) - must yield control
+    if (isRaidHunterRaiding()) {
+        console.log('[Better Tasker] Raid Hunter is actively raiding - cannot take autoplay control');
+        return false;
+    }
+    
     // Check if another mod is controlling autoplay
     if (window.AutoplayManager.isControlledByOther('Better Tasker')) {
         console.log('[Better Tasker] Cannot switch to autoplay - controlled by another mod');
@@ -5509,7 +5518,7 @@ async function handleTaskFinishing() {
                     if (!taskingMapId) {
                         // Check if Raid Hunter is actively raiding before navigating
                         if (isRaidHunterRaiding()) {
-                            console.log('[Better Tasker] Raid Hunter is actively raiding HIGH priority raid - deferring task navigation');
+                            console.log('[Better Tasker] Raid Hunter is actively raiding (HIGH or MEDIUM priority) - deferring task navigation');
                             return;
                         }
                         console.log(`[Better Tasker] No tasking map ID stored (current: ${currentRoomId}) - opening quest log to get suggested map information...`);

@@ -186,6 +186,13 @@ const inventoryTooltips = {
     rarity: '5',
     obtain: 'Halloween Event'
   },
+  summonScroll7: {
+    displayName: "Summon Scroll (Festive)",
+    text: 'Summon a <img src="https://bestiaryarena.com/assets/icons/shiny-star.png" alt="✨" style="display: inline-block; width: 9px; height: 10px; vertical-align: middle; margin: 0 2px;">Shiny creature with at least 90% genes.',
+    icon: '/assets/icons/summonscroll7.png',
+    rarity: '5',
+    obtain: 'Christmas Event'
+  },
   surpriseCube1: {
     displayName: "Surprise Cube (Deformed)",
     text: 'Rolls white consumables.',
@@ -452,7 +459,7 @@ const INVENTORY_VARIANTS = {
   'Exaltation Chests': ['equipChest'], 'Nickname Creature': ['nicknameMonster'], 'Outfit Bags': ['hunterOutfitBag', 'outfitBag1'],
   'Stamina Potions': ['stamina1', 'stamina2', 'stamina3', 'stamina4', 'stamina5'],
   'Stones of Insight': ['insightStone1', 'insightStone2', 'insightStone3', 'insightStone4', 'insightStone5'],
-  'Summon Scrolls': ['summonScroll1', 'summonScroll2', 'summonScroll3', 'summonScroll4', 'summonScroll5', 'summonScroll6'],
+  'Summon Scrolls': ['summonScroll1', 'summonScroll2', 'summonScroll3', 'summonScroll4', 'summonScroll5', 'summonScroll6', 'summonScroll7'],
   'Surprise Cubes': ['surpriseCube1', 'surpriseCube2', 'surpriseCube3', 'surpriseCube4', 'surpriseCube5'],
   'Beast Coins': ['beastCoins'], 'Dust': ['dust'], 'Gold': ['gold'], 'Hunting Marks': ['huntingMarks'],
   'Avarice Rune': ['runeAvarice'], 'Hitpoints Rune': ['runeHp'], 'Attack Damage Rune': ['runeAd'], 'Ability Power Rune': ['runeAp'], 'Armor Rune': ['runeAr'], 'Magic Resist Rune': ['runeMr'],

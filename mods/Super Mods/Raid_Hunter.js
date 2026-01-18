@@ -6740,25 +6740,23 @@ context.exports = {
 window.raidHunterIsCurrentlyRaiding = () => isCurrentlyRaiding;
 
 // Expose function to check if Raid Hunter is raiding a HIGH priority raid
-// Better Tasker should yield ONLY for HIGH priority raids
-// MEDIUM priority raids do NOT cause Better Tasker to yield, but also don't yield to Better Tasker
-// LOW priority raids yield to Better Tasker when it's active
+// Better Tasker should yield for HIGH and MEDIUM priority raids
+// HIGH priority raids: Better Tasker always yields
+// MEDIUM priority raids: Never yield to Better Tasker (Better Tasker must yield)
+// LOW priority raids: Yield to Better Tasker when it's active
 window.raidHunterIsRaidingHighPriority = () => {
     if (!isCurrentlyRaiding || !currentRaidInfo) {
         return false;
     }
-    // Only HIGH priority raids cause Better Tasker to yield
-    // MEDIUM and LOW priority raids do not trigger Better Tasker to yield
     return currentRaidInfo.priority === RAID_PRIORITY.HIGH;
 };
 
 // Expose function to check if Raid Hunter is raiding a MEDIUM priority raid
-// Better Tasker should NOT overtake MEDIUM priority raids - they coexist (neither yields)
+// MEDIUM priority raids NEVER yield to Better Tasker (Better Tasker must yield)
 window.raidHunterIsRaidingMediumPriority = () => {
     if (!isCurrentlyRaiding || !currentRaidInfo) {
         return false;
     }
-    // MEDIUM priority raids should coexist with Better Tasker - neither yields to the other per tooltip
     return currentRaidInfo.priority === RAID_PRIORITY.MEDIUM;
 };
 
@@ -6794,6 +6792,42 @@ window.raidHunterHasEnabledHighPriorityRaid = () => {
         return false; // No enabled HIGH priority raids found
     } catch (error) {
         console.error('[Raid Hunter] Error checking enabled HIGH priority raids:', error);
+        return false;
+    }
+};
+
+// Expose function to check if Raid Hunter has any enabled MEDIUM priority raids available
+// This helps Better Tasker avoid waiting unnecessarily for disabled raids
+window.raidHunterHasEnabledMediumPriorityRaid = () => {
+    try {
+        const settings = loadSettings();
+        const enabledMaps = settings.enabledRaidMaps || [];
+        
+        if (enabledMaps.length === 0) {
+            return false; // No raids enabled at all
+        }
+        
+        const raidState = globalThis.state?.raids?.getSnapshot?.();
+        if (!raidState) {
+            return false;
+        }
+        
+        const currentRaidList = raidState.context?.list || [];
+        
+        // Check if any of the available raids are enabled MEDIUM priority raids
+        for (const raid of currentRaidList) {
+            const raidName = getEventNameForRoomId(raid.roomId);
+            if (enabledMaps.includes(raidName)) {
+                const priority = getRaidPriority(raidName);
+                if (priority === RAID_PRIORITY.MEDIUM) {
+                    return true; // Found an enabled MEDIUM priority raid
+                }
+            }
+        }
+        
+        return false; // No enabled MEDIUM priority raids found
+    } catch (error) {
+        console.error('[Raid Hunter] Error checking enabled MEDIUM priority raids:', error);
         return false;
     }
 };

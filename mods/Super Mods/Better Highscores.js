@@ -40,7 +40,8 @@
          CONTAINER_POSITION: {
       position: 'absolute',
       top: '9px',
-      left: '290px',
+      left: '50%',
+      transform: 'translateX(-50%)',
       width: 'auto',
       height: '30px'
     },
@@ -112,6 +113,9 @@
     // Timeout tracking for cleanup
     timeouts: [],
     
+    // Visibility state
+    isVisible: true,
+    
     // State reset
     reset() {
       this.lastUpdateTime = 0;
@@ -124,6 +128,7 @@
       this.leaderboardCache.clear();
       this.subscriptions = [];
       this.timeouts = [];
+      // Don't reset isVisible - persist user preference
     },
     
     // Helper function to track timeouts for cleanup
@@ -583,6 +588,97 @@
     return medalType ? UI_CONFIG.COLORS[medalType] : 'white';
   }
 
+  // Function to toggle game UI buttons (Loot and Auto-setup)
+  function toggleGameUIButtons(visible) {
+    // Find and toggle Loot button
+    const lootButton = Array.from(document.querySelectorAll('button')).find(btn => {
+      const img = btn.querySelector('img[src="/assets/icons/pot.png"]');
+      return img && btn.textContent.includes('Loot');
+    });
+    
+    if (lootButton) {
+      lootButton.style.display = visible ? '' : 'none';
+    }
+    
+    // Find and toggle Auto-setup button
+    const autoSetupButton = Array.from(document.querySelectorAll('button')).find(btn => {
+      const svg = btn.querySelector('svg.lucide-wand-sparkles');
+      return svg && btn.textContent.includes('Auto-setup');
+    });
+    
+    if (autoSetupButton) {
+      autoSetupButton.style.display = visible ? '' : 'none';
+    }
+  }
+
+  // Function to toggle highscore visibility
+  function toggleHighscoreVisibility() {
+    BetterHighscoresState.isVisible = !BetterHighscoresState.isVisible;
+    
+    // Update the container visibility
+    if (leaderboardContainer) {
+      if (BetterHighscoresState.isVisible) {
+        leaderboardContainer.style.display = 'block';
+      } else {
+        leaderboardContainer.style.display = 'none';
+      }
+    }
+    
+    // Toggle game UI buttons
+    toggleGameUIButtons(BetterHighscoresState.isVisible);
+    
+    // Update the navigation button
+    updateNavButtonIcon();
+    
+    console.log('[Better Highscores] Visibility toggled:', BetterHighscoresState.isVisible);
+  }
+  
+  // Function to update the navigation button icon
+  function updateNavButtonIcon() {
+    const navButton = document.querySelector('.better-highscores-nav-btn');
+    if (navButton) {
+      navButton.style.color = BetterHighscoresState.isVisible ? '#22c55e' : '#ef4444';
+      navButton.title = BetterHighscoresState.isVisible ? 'Hide Highscores' : 'Show Highscores';
+    }
+  }
+  
+  // Function to add toggle button to navigation bar
+  function addHighscoreNavButton() {
+    function tryInsert() {
+      const nav = document.querySelector('nav.shrink-0');
+      if (!nav) {
+        setTimeout(tryInsert, 500);
+        return;
+      }
+      
+      const ul = nav.querySelector('ul.flex.items-center');
+      if (!ul) {
+        setTimeout(tryInsert, 500);
+        return;
+      }
+      
+      // Check if button already exists
+      if (ul.querySelector('.better-highscores-nav-btn')) return;
+      
+      const li = document.createElement('li');
+      li.className = 'hover:text-whiteExp';
+      
+      const btn = document.createElement('button');
+      btn.className = 'better-highscores-nav-btn focus-style-visible pixel-font-16 relative my-px flex items-center gap-1.5 border border-solid border-transparent px-1 py-0.5 active:frame-pressed-1 data-[selected="true"]:frame-pressed-1 hover:text-whiteExp data-[selected="true"]:text-whiteExp sm:px-2 sm:py-0.5';
+      btn.setAttribute('data-selected', 'false');
+      btn.innerHTML = '<img src="https://bestiaryarena.com/assets/icons/highscore.png" alt="Toggle Highscores" width="12" height="12" class="pixelated"><span class="hidden sm:inline">HS</span>';
+      btn.title = BetterHighscoresState.isVisible ? 'Hide Highscores' : 'Show Highscores';
+      btn.style.color = BetterHighscoresState.isVisible ? '#22c55e' : '#ef4444';
+      btn.onclick = toggleHighscoreVisibility;
+      
+      li.appendChild(btn);
+      ul.appendChild(li);
+      
+      console.log('[Better Highscores] Navigation button added');
+    }
+    tryInsert();
+  }
+
   function getMaxRankPoints() {
     try {
       // Get current map code
@@ -695,8 +791,10 @@
     Object.assign(section.style, {
       display: 'flex',
       alignItems: 'center',
-      gap: '2px',
-      minWidth: 'auto'
+      gap: '3px',
+      minWidth: 'auto',
+      whiteSpace: 'nowrap',
+      flexShrink: '0'
     });
     
     if (data && data.length > 0) {
@@ -705,7 +803,9 @@
       Object.assign(titleText.style, {
         fontWeight: 'bold',
         color: config.titleColor,
-        fontSize: '10px'
+        fontSize: '10px',
+        whiteSpace: 'nowrap',
+        flexShrink: '0'
       });
       titleText.textContent = config.displayName || config.title;
       section.appendChild(titleText);
@@ -721,7 +821,9 @@
         Object.assign(maxDisplay.style, {
           fontSize: '10px',
           color: maxColor,
-          fontWeight: 'bold'
+          fontWeight: 'bold',
+          whiteSpace: 'nowrap',
+          flexShrink: '0'
         });
         maxDisplay.textContent = `(${currentValue}/${maxValue})`;
         section.appendChild(maxDisplay);
@@ -759,7 +861,9 @@
           marginRight: '2px',
           display: 'flex',
           alignItems: 'center',
-          gap: '2px'
+          gap: '2px',
+          whiteSpace: 'nowrap',
+          flexShrink: '0'
         });
         
         // Add "You" icon
@@ -803,7 +907,9 @@
           marginRight: '2px',
           display: 'flex',
           alignItems: 'center',
-          gap: '2px'
+          gap: '2px',
+          whiteSpace: 'nowrap',
+          flexShrink: '0'
         });
         
         // Add icon
@@ -840,7 +946,12 @@
     // Create wrapper container for positioning
     const wrapper = document.createElement('div');
     wrapper.className = 'better-highscores-container';
-    Object.assign(wrapper.style, UI_CONFIG.CONTAINER_POSITION);
+    Object.assign(wrapper.style, {
+      ...UI_CONFIG.CONTAINER_POSITION,
+      display: BetterHighscoresState.isVisible ? 'block' : 'none',
+      width: 'auto',
+      height: 'auto'
+    });
     // Ensure wrapper has highest z-index to always be on top
     wrapper.style.zIndex = UI_CONFIG.CONTAINER_STYLE.zIndex || '999999';
     
@@ -876,14 +987,15 @@
       zIndex: '1',
       display: 'flex',
       alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '6px',
-      background: 'transparent'
+      justifyContent: 'flex-start',
+      gap: '8px',
+      background: 'transparent',
+      whiteSpace: 'nowrap',
+      flexWrap: 'nowrap'
     });
     
     // Store references for opacity updates
     wrapper._backgroundDiv = backgroundDiv;
-    wrapper._contentDiv = container;
     
     // Get user data once
     const userScores = getUserBestScores();
@@ -938,11 +1050,13 @@
     // Add border-left separators to sections (except first section)
     Object.assign(rankSection.style, {
       borderLeft: '1px solid rgba(255, 255, 255, 0.2)',
-      paddingLeft: '6px'
+      paddingLeft: '8px',
+      marginLeft: '2px'
     });
     Object.assign(floorSection.style, {
       borderLeft: '1px solid rgba(255, 255, 255, 0.2)',
-      paddingLeft: '6px'
+      paddingLeft: '8px',
+      marginLeft: '2px'
     });
     
     // Append all sections to container
@@ -1061,6 +1175,14 @@
   // Function to initialize the mod
   function initBetterHighscores() {
     console.log('[Better Highscores] Initializing version 1.0.0');
+    
+    // Add navigation button
+    addHighscoreNavButton();
+    
+    // Sync game UI buttons with initial visibility state
+    setTimeout(() => {
+      toggleGameUIButtons(BetterHighscoresState.isVisible);
+    }, 500);
     
     // Wait for game state to be available
     let checkGameStateTimeout = null;
@@ -1200,6 +1322,16 @@
   function cleanup() {
     console.log('[Better Highscores] Cleaning up...');
     
+    // Remove navigation button
+    const navButton = document.querySelector('.better-highscores-nav-btn');
+    if (navButton && navButton.parentElement) {
+      try {
+        navButton.parentElement.remove();
+      } catch (error) {
+        console.warn('[Better Highscores] Error removing navigation button:', error);
+      }
+    }
+    
     // Remove leaderboard container
     if (leaderboardContainer) {
       try {
@@ -1283,6 +1415,12 @@
   function updateOpacity(opacity) {
     if (leaderboardContainer && leaderboardContainer._backgroundDiv) {
       leaderboardContainer._backgroundDiv.style.opacity = opacity;
+      
+      // Also update the navigation button if it exists
+      const navButton = document.querySelector('.better-highscores-nav-btn');
+      if (navButton) {
+        navButton.style.opacity = opacity;
+      }
     } else if (leaderboardContainer) {
       // Container exists but doesn't have the new structure, recreate it
       console.log('[Better Highscores] Container structure outdated, updating leaderboards');
@@ -1297,6 +1435,8 @@
     window.BetterHighscores.restoreContainer = restoreContainer;
     window.BetterHighscores.preserveContainer = preserveContainer;
     window.BetterHighscores.updateOpacity = updateOpacity;
+    window.BetterHighscores.toggleVisibility = toggleHighscoreVisibility;
+    window.BetterHighscores.updateNavButton = updateNavButtonIcon;
     window.BetterHighscores.debug = {
       getCurrentMapCode: getCurrentMapCode,
       getMapName: getMapName,
