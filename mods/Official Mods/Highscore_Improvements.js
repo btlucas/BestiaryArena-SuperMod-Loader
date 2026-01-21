@@ -307,8 +307,11 @@ function createTabs(tickContent, rankContent, difficultyContent) {
   tickTab.appendChild(tickContent.statsContainer);
   
   const rankTab = document.createElement('div');
-  rankTab.style.display = 'none';
+  rankTab.style.display = 'flex';
   rankTab.style.flexDirection = 'column';
+  rankTab.style.visibility = 'hidden';
+  rankTab.style.position = 'absolute';
+  rankTab.style.pointerEvents = 'none';
   rankTab.appendChild(rankContent.scrollContainer.element);
   
   const separator2 = document.createElement('div');
@@ -318,8 +321,11 @@ function createTabs(tickContent, rankContent, difficultyContent) {
   rankTab.appendChild(rankContent.statsContainer);
   
   const difficultyTab = document.createElement('div');
-  difficultyTab.style.display = 'none';
+  difficultyTab.style.display = 'flex';
   difficultyTab.style.flexDirection = 'column';
+  difficultyTab.style.visibility = 'hidden';
+  difficultyTab.style.position = 'absolute';
+  difficultyTab.style.pointerEvents = 'none';
   difficultyTab.appendChild(difficultyContent.scrollContainer.element);
   
   const separator3 = document.createElement('div');
@@ -333,27 +339,45 @@ function createTabs(tickContent, rankContent, difficultyContent) {
     tickTabButton.className = 'frame-pressed-1 surface-regular px-4 py-1 flex-1 tab-active';
     rankTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
     difficultyTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
-    tickTab.style.display = 'flex';
-    rankTab.style.display = 'none';
-    difficultyTab.style.display = 'none';
+    tickTab.style.visibility = 'visible';
+    tickTab.style.position = 'relative';
+    tickTab.style.pointerEvents = 'auto';
+    rankTab.style.visibility = 'hidden';
+    rankTab.style.position = 'absolute';
+    rankTab.style.pointerEvents = 'none';
+    difficultyTab.style.visibility = 'hidden';
+    difficultyTab.style.position = 'absolute';
+    difficultyTab.style.pointerEvents = 'none';
   });
   
   rankTabButton.addEventListener('click', () => {
     tickTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
     rankTabButton.className = 'frame-pressed-1 surface-regular px-4 py-1 flex-1 tab-active';
     difficultyTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
-    tickTab.style.display = 'none';
-    rankTab.style.display = 'flex';
-    difficultyTab.style.display = 'none';
+    tickTab.style.visibility = 'hidden';
+    tickTab.style.position = 'absolute';
+    tickTab.style.pointerEvents = 'none';
+    rankTab.style.visibility = 'visible';
+    rankTab.style.position = 'relative';
+    rankTab.style.pointerEvents = 'auto';
+    difficultyTab.style.visibility = 'hidden';
+    difficultyTab.style.position = 'absolute';
+    difficultyTab.style.pointerEvents = 'none';
   });
   
   difficultyTabButton.addEventListener('click', () => {
     tickTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
     rankTabButton.className = 'frame-pressed-1 surface-dark px-4 py-1 flex-1';
     difficultyTabButton.className = 'frame-pressed-1 surface-regular px-4 py-1 flex-1 tab-active';
-    tickTab.style.display = 'none';
-    rankTab.style.display = 'none';
-    difficultyTab.style.display = 'flex';
+    tickTab.style.visibility = 'hidden';
+    tickTab.style.position = 'absolute';
+    tickTab.style.pointerEvents = 'none';
+    rankTab.style.visibility = 'hidden';
+    rankTab.style.position = 'absolute';
+    rankTab.style.pointerEvents = 'none';
+    difficultyTab.style.visibility = 'visible';
+    difficultyTab.style.position = 'relative';
+    difficultyTab.style.pointerEvents = 'auto';
   });
   
   // Add everything to the container
