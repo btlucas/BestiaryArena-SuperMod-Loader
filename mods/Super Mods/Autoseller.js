@@ -5220,7 +5220,7 @@
             const btn = document.createElement('button');
             btn.className = `${UI_CONSTANTS.CSS_CLASSES.AUTOSELLER_NAV_BTN} focus-style-visible pixel-font-16 relative my-px flex items-center gap-1.5 border border-solid border-transparent px-1 py-0.5 active:frame-pressed-1 data-[selected="true"]:frame-pressed-1 hover:text-whiteExp data-[selected="true"]:text-whiteExp sm:px-2 sm:py-0.5`;
             btn.setAttribute('data-selected', 'false');
-            btn.innerHTML = `<img src="https://bestiaryarena.com/assets/icons/goldpile.png" alt="${t('mods.autoseller.navButton')}" width="12" height="12" class="pixelated"><span class="hidden sm:inline">${t('mods.autoseller.navButton')}</span>`;
+            btn.innerHTML = `<img src="https://bestiaryarena.com/assets/icons/goldpile.png" alt="" width="12" height="12" class="pixelated"><span class="hidden sm:inline"></span>`;
             btn.onclick = openAutosellerModal;
             
             li.appendChild(btn);

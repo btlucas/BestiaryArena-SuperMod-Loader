@@ -611,7 +611,7 @@
     }
   }
 
-  // Function to toggle highscore visibility
+  // Function to toggle highscore visibility (called by Mod Settings button)
   function toggleHighscoreVisibility() {
     BetterHighscoresState.isVisible = !BetterHighscoresState.isVisible;
     
@@ -627,56 +627,7 @@
     // Toggle game UI buttons
     toggleGameUIButtons(BetterHighscoresState.isVisible);
     
-    // Update the navigation button
-    updateNavButtonIcon();
-    
     console.log('[Better Highscores] Visibility toggled:', BetterHighscoresState.isVisible);
-  }
-  
-  // Function to update the navigation button icon
-  function updateNavButtonIcon() {
-    const navButton = document.querySelector('.better-highscores-nav-btn');
-    if (navButton) {
-      navButton.style.color = BetterHighscoresState.isVisible ? '#22c55e' : '#ef4444';
-      navButton.title = BetterHighscoresState.isVisible ? 'Hide Highscores' : 'Show Highscores';
-    }
-  }
-  
-  // Function to add toggle button to navigation bar
-  function addHighscoreNavButton() {
-    function tryInsert() {
-      const nav = document.querySelector('nav.shrink-0');
-      if (!nav) {
-        setTimeout(tryInsert, 500);
-        return;
-      }
-      
-      const ul = nav.querySelector('ul.flex.items-center');
-      if (!ul) {
-        setTimeout(tryInsert, 500);
-        return;
-      }
-      
-      // Check if button already exists
-      if (ul.querySelector('.better-highscores-nav-btn')) return;
-      
-      const li = document.createElement('li');
-      li.className = 'hover:text-whiteExp';
-      
-      const btn = document.createElement('button');
-      btn.className = 'better-highscores-nav-btn focus-style-visible pixel-font-16 relative my-px flex items-center gap-1.5 border border-solid border-transparent px-1 py-0.5 active:frame-pressed-1 data-[selected="true"]:frame-pressed-1 hover:text-whiteExp data-[selected="true"]:text-whiteExp sm:px-2 sm:py-0.5';
-      btn.setAttribute('data-selected', 'false');
-      btn.innerHTML = '<img src="https://bestiaryarena.com/assets/icons/highscore.png" alt="Toggle Highscores" width="12" height="12" class="pixelated"><span class="hidden sm:inline">HS</span>';
-      btn.title = BetterHighscoresState.isVisible ? 'Hide Highscores' : 'Show Highscores';
-      btn.style.color = BetterHighscoresState.isVisible ? '#22c55e' : '#ef4444';
-      btn.onclick = toggleHighscoreVisibility;
-      
-      li.appendChild(btn);
-      ul.appendChild(li);
-      
-      console.log('[Better Highscores] Navigation button added');
-    }
-    tryInsert();
   }
 
   function getMaxRankPoints() {
@@ -1176,9 +1127,6 @@
   function initBetterHighscores() {
     console.log('[Better Highscores] Initializing version 1.0.0');
     
-    // Add navigation button
-    addHighscoreNavButton();
-    
     // Sync game UI buttons with initial visibility state
     setTimeout(() => {
       toggleGameUIButtons(BetterHighscoresState.isVisible);
@@ -1322,16 +1270,6 @@
   function cleanup() {
     console.log('[Better Highscores] Cleaning up...');
     
-    // Remove navigation button
-    const navButton = document.querySelector('.better-highscores-nav-btn');
-    if (navButton && navButton.parentElement) {
-      try {
-        navButton.parentElement.remove();
-      } catch (error) {
-        console.warn('[Better Highscores] Error removing navigation button:', error);
-      }
-    }
-    
     // Remove leaderboard container
     if (leaderboardContainer) {
       try {
@@ -1436,7 +1374,6 @@
     window.BetterHighscores.preserveContainer = preserveContainer;
     window.BetterHighscores.updateOpacity = updateOpacity;
     window.BetterHighscores.toggleVisibility = toggleHighscoreVisibility;
-    window.BetterHighscores.updateNavButton = updateNavButtonIcon;
     window.BetterHighscores.debug = {
       getCurrentMapCode: getCurrentMapCode,
       getMapName: getMapName,

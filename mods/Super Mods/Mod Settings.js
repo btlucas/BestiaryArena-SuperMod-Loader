@@ -29,7 +29,9 @@ const defaultConfig = {
   includeRunDataByDefault: true,
   includeHuntDataByDefault: true,
   inventoryBorderStyle: 'Original',
-  betterHighscoresBackgroundOpacity: 1.0 // Opacity for Better Highscores background (0.0 to 1.0)
+  betterHighscoresBackgroundOpacity: 1.0, // Opacity for Better Highscores background (0.0 to 1.0)
+  showLastVisitedMapButton: false, // Show last visited map navigation button
+  showBetterHighscoresButton: false // Show Better Highscores toggle button
 };
 
 // Storage key for this mod
@@ -1800,6 +1802,7 @@ function showSettingsModal() {
       { id: 'ui', label: t('mods.betterUI.menuUI'), selected: false },
       { id: 'hunt-analyzer', label: t('mods.betterUI.menuHuntAnalyzer'), selected: false },
       { id: 'advanced', label: t('mods.betterUI.menuAdvanced'), selected: false },
+      { id: 'extra', label: 'Extra', selected: false },
       { id: 'backup', label: t('mods.betterUI.menuBackup'), selected: false }
     ];
     
@@ -2052,6 +2055,42 @@ function showSettingsModal() {
           </div>
         `;
         rightColumn.appendChild(huntAnalyzerContent);
+      } else if (categoryId === 'extra') {
+        // Extra tab - additional features
+        const extraContent = document.createElement('div');
+        extraContent.innerHTML = `
+          <div style="margin-bottom: 20px;">
+            <h3 style="color: #ffe066; font-size: 16px; margin-bottom: 10px; text-align: center;">Extra Features</h3>
+            <p style="color: #ccc; font-size: 12px; margin-bottom: 15px; text-align: center; font-style: italic;">
+              Additional features and utilities
+            </p>
+          </div>
+          
+          <div style="margin-bottom: 15px; border-bottom: 1px solid #444; padding-bottom: 10px;">
+            <h4 style="color: #ffe066; font-size: 14px; margin-bottom: 10px;">Navigation Buttons</h4>
+            
+            <div style="margin-bottom: 15px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="last-visited-map-toggle" style="transform: scale(1.2);">
+                <span>Show Last Visited Map Button (♻️)</span>
+              </label>
+              <p style="color: #888; font-size: 11px; margin-top: 5px; margin-left: 30px; font-style: italic;">
+                Adds a recycling button to the navigation bar that returns you to the last map you visited (excluding sewers)
+              </p>
+            </div>
+            
+            <div style="margin-bottom: 15px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="better-highscores-toggle" style="transform: scale(1.2);">
+                <span>Show Better Highscores Toggle Button (👁️)</span>
+              </label>
+              <p style="color: #888; font-size: 11px; margin-top: 5px; margin-left: 30px; font-style: italic;">
+                Adds an eye button to toggle Better Highscores display and game screen buttons (Loot, Auto-setup)
+              </p>
+            </div>
+          </div>
+        `;
+        rightColumn.appendChild(extraContent);
       } else if (categoryId === 'backup') {
         const backupContent = document.createElement('div');
         backupContent.innerHTML = `
@@ -2190,6 +2229,37 @@ function showSettingsModal() {
           hideWebsiteFooter,
           showWebsiteFooter
         )(removeFooterCheckbox);
+      }
+      
+      const lastVisitedMapCheckbox = content.querySelector('#last-visited-map-toggle');
+      if (lastVisitedMapCheckbox) {
+        createSettingsCheckboxHandler('showLastVisitedMapButton',
+          () => {
+            console.log('[Mod Settings] Last visited map button enabled');
+            loadLastVisitedMap();
+            subscribeToMapChanges();
+            addLastMapNavButton();
+          },
+          () => {
+            console.log('[Mod Settings] Last visited map button disabled');
+            unsubscribeFromMapChanges();
+            removeLastMapNavButton();
+          }
+        )(lastVisitedMapCheckbox);
+      }
+      
+      const betterHighscoresCheckbox = content.querySelector('#better-highscores-toggle');
+      if (betterHighscoresCheckbox) {
+        createSettingsCheckboxHandler('showBetterHighscoresButton',
+          () => {
+            console.log('[Mod Settings] Better Highscores button enabled');
+            addBetterHighscoresNavButton();
+          },
+          () => {
+            console.log('[Mod Settings] Better Highscores button disabled');
+            removeBetterHighscoresNavButton();
+          }
+        )(betterHighscoresCheckbox);
       }
       
       const inventoryBorderStyleSelector = content.querySelector('#inventory-border-style-selector');
@@ -5404,7 +5474,313 @@ function addPlayercountHeaderButton() {
 }
 
 // =======================
-// 16. Initialization
+// 16. Last Visited Map Navigation
+// =======================
+
+// Last visited map tracking
+const LAST_MAP_STORAGE_KEY = 'mod-settings-last-map';
+let lastVisitedMap = null;
+let lastMapButton = null;
+let mapChangeUnsubscribe = null;
+
+// Load last visited map from localStorage
+const loadLastVisitedMap = () => {
+  try {
+    const saved = localStorage.getItem(LAST_MAP_STORAGE_KEY);
+    if (saved) {
+      lastVisitedMap = JSON.parse(saved);
+      console.log('[Mod Settings] Loaded last visited map:', lastVisitedMap);
+    }
+  } catch (error) {
+    console.error('[Mod Settings] Error loading last visited map:', error);
+  }
+};
+
+// Save last visited map to localStorage
+const saveLastVisitedMap = (roomId, roomName) => {
+  try {
+    lastVisitedMap = { roomId, roomName };
+    localStorage.setItem(LAST_MAP_STORAGE_KEY, JSON.stringify(lastVisitedMap));
+    console.log('[Mod Settings] Saved last visited map:', lastVisitedMap);
+    updateLastMapButton();
+  } catch (error) {
+    console.error('[Mod Settings] Error saving last visited map:', error);
+  }
+};
+
+// Navigate to last visited map
+const navigateToLastMap = () => {
+  if (!lastVisitedMap || !lastVisitedMap.roomId) {
+    createToast({
+      message: 'No map saved yet. Visit any map (except sewers) first!',
+      type: 'info',
+      duration: 3000
+    });
+    return;
+  }
+  
+  try {
+    console.log('[Mod Settings] Navigating to last visited map:', lastVisitedMap);
+    globalThis.state.board.send({ 
+      type: 'selectRoomById', 
+      roomId: lastVisitedMap.roomId 
+    });
+  } catch (error) {
+    console.error('[Mod Settings] Error navigating to last map:', error);
+    createToast({
+      message: 'Failed to navigate to map',
+      type: 'error',
+      duration: 2000
+    });
+  }
+};
+
+// Update last map button tooltip
+const updateLastMapButton = () => {
+  if (!lastMapButton) return;
+  
+  if (lastVisitedMap && lastVisitedMap.roomId) {
+    // Get room name from utils if not stored
+    let roomName = lastVisitedMap.roomName;
+    if (!roomName) {
+      const roomNames = globalThis.state?.utils?.ROOM_NAME || {};
+      roomName = roomNames[lastVisitedMap.roomId] || lastVisitedMap.roomId;
+    }
+    lastMapButton.title = `Return to ${roomName}`;
+    lastMapButton.style.opacity = '1';
+  } else {
+    lastMapButton.title = 'No map saved yet';
+    lastMapButton.style.opacity = '0.5'; // Dim the button but keep it visible
+  }
+};
+
+// Add last map button to navigation bar
+const addLastMapNavButton = () => {
+  if (!config.showLastVisitedMapButton) {
+    console.log('[Mod Settings] Last map button disabled in config');
+    return;
+  }
+  
+  function tryInsert() {
+    const nav = document.querySelector('nav.shrink-0');
+    if (!nav) {
+      setTimeout(tryInsert, 500);
+      return;
+    }
+    
+    const ul = nav.querySelector('ul.flex.items-center');
+    if (!ul) {
+      setTimeout(tryInsert, 500);
+      return;
+    }
+    
+    // Check if button already exists
+    if (ul.querySelector('.last-map-nav-btn')) {
+      console.log('[Mod Settings] Last map button already exists');
+      return;
+    }
+    
+    const li = document.createElement('li');
+    li.className = 'hover:text-whiteExp';
+    
+    const btn = document.createElement('button');
+    btn.className = 'last-map-nav-btn focus-style-visible pixel-font-16 relative my-px flex items-center gap-1.5 border border-solid border-transparent px-1 py-0.5 active:frame-pressed-1 data-[selected="true"]:frame-pressed-1 hover:text-whiteExp data-[selected="true"]:text-whiteExp sm:px-2 sm:py-0.5';
+    btn.setAttribute('data-selected', 'false');
+    btn.textContent = '♻️';
+    
+    // Get proper tooltip text
+    let tooltipText = 'No map saved yet';
+    if (lastVisitedMap && lastVisitedMap.roomId) {
+      let roomName = lastVisitedMap.roomName;
+      if (!roomName) {
+        const roomNames = globalThis.state?.utils?.ROOM_NAME || {};
+        roomName = roomNames[lastVisitedMap.roomId] || lastVisitedMap.roomId;
+      }
+      tooltipText = `Return to ${roomName}`;
+    }
+    btn.title = tooltipText;
+    
+    btn.style.color = '#3b82f6'; // Blue color
+    btn.style.opacity = lastVisitedMap && lastVisitedMap.roomId ? '1' : '0.5'; // Dim if no map saved
+    btn.onclick = navigateToLastMap;
+    
+    lastMapButton = btn;
+    
+    li.appendChild(btn);
+    ul.appendChild(li);
+    
+    // Update button state
+    updateLastMapButton();
+    
+    console.log('[Mod Settings] Last map navigation button added');
+  }
+  tryInsert();
+};
+
+// Remove last map button
+const removeLastMapNavButton = () => {
+  const existingButton = document.querySelector('.last-map-nav-btn');
+  if (existingButton) {
+    existingButton.parentElement?.remove();
+    lastMapButton = null;
+    console.log('[Mod Settings] Last map button removed');
+  }
+};
+
+// Subscribe to map changes
+const subscribeToMapChanges = () => {
+  try {
+    if (globalThis.state && globalThis.state.board) {
+      const handleBoardChange = (state) => {
+        try {
+          const boardContext = state.context;
+          const selectedMap = boardContext?.selectedMap;
+          
+          if (selectedMap && selectedMap.selectedRoom) {
+            const roomId = selectedMap.selectedRoom.id;
+            
+            // Get room name from utils if not in selectedRoom
+            let roomName = selectedMap.selectedRoom.name;
+            if (!roomName) {
+              const roomNames = globalThis.state?.utils?.ROOM_NAME || {};
+              roomName = roomNames[roomId] || roomId;
+            }
+            
+            // Skip sewers (default map) and save any other map
+            if (roomId && roomId !== 'rkswrs') {
+              // Only save if it's different from the last saved map
+              if (!lastVisitedMap || lastVisitedMap.roomId !== roomId) {
+                console.log('[Mod Settings] Saving new map:', roomId, roomName);
+                saveLastVisitedMap(roomId, roomName);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[Mod Settings] Error in map tracking:', error);
+        }
+      };
+      
+      // Subscribe using .subscribe()
+      mapChangeUnsubscribe = globalThis.state.board.subscribe(handleBoardChange);
+      console.log('[Mod Settings] Subscribed to map changes');
+    }
+  } catch (error) {
+    console.error('[Mod Settings] Error subscribing to map changes:', error);
+  }
+};
+
+// Unsubscribe from map changes
+const unsubscribeFromMapChanges = () => {
+  if (mapChangeUnsubscribe && typeof mapChangeUnsubscribe === 'function') {
+    mapChangeUnsubscribe();
+    mapChangeUnsubscribe = null;
+    console.log('[Mod Settings] Unsubscribed from map changes');
+  }
+};
+
+// =======================
+// 17. Better Highscores Toggle Button
+// =======================
+
+let betterHighscoresButton = null;
+
+// Function to toggle Better Highscores visibility
+const toggleBetterHighscoresVisibility = () => {
+  try {
+    if (window.BetterHighscores && typeof window.BetterHighscores.toggleVisibility === 'function') {
+      window.BetterHighscores.toggleVisibility();
+      updateBetterHighscoresButton();
+      console.log('[Mod Settings] Better Highscores visibility toggled');
+    } else {
+      console.warn('[Mod Settings] Better Highscores mod not loaded or toggleVisibility not available');
+      createToast({
+        message: 'Better Highscores mod not loaded',
+        type: 'error',
+        duration: 2000
+      });
+    }
+  } catch (error) {
+    console.error('[Mod Settings] Error toggling Better Highscores visibility:', error);
+  }
+};
+
+// Update Better Highscores button appearance based on current visibility state
+const updateBetterHighscoresButton = () => {
+  if (!betterHighscoresButton) return;
+  
+  try {
+    // Get current visibility state from Better Highscores mod
+    const isVisible = window.BetterHighscores?.debug?.getState?.()?.leaderboardContainer !== false;
+    
+    betterHighscoresButton.style.color = isVisible ? '#22c55e' : '#ef4444';
+    betterHighscoresButton.title = 'Hide better highscores and/or screen buttons';
+  } catch (error) {
+    console.warn('[Mod Settings] Error updating Better Highscores button:', error);
+  }
+};
+
+// Add Better Highscores toggle button to navigation bar
+const addBetterHighscoresNavButton = () => {
+  if (!config.showBetterHighscoresButton) {
+    console.log('[Mod Settings] Better Highscores button disabled in config');
+    return;
+  }
+  
+  function tryInsert() {
+    const nav = document.querySelector('nav.shrink-0');
+    if (!nav) {
+      setTimeout(tryInsert, 500);
+      return;
+    }
+    
+    const ul = nav.querySelector('ul.flex.items-center');
+    if (!ul) {
+      setTimeout(tryInsert, 500);
+      return;
+    }
+    
+    // Check if button already exists
+    if (ul.querySelector('.better-highscores-toggle-btn')) {
+      console.log('[Mod Settings] Better Highscores button already exists');
+      return;
+    }
+    
+    const li = document.createElement('li');
+    li.className = 'hover:text-whiteExp';
+    
+    const btn = document.createElement('button');
+    btn.className = 'better-highscores-toggle-btn focus-style-visible pixel-font-16 relative my-px flex items-center gap-1.5 border border-solid border-transparent px-1 py-0.5 active:frame-pressed-1 data-[selected="true"]:frame-pressed-1 hover:text-whiteExp data-[selected="true"]:text-whiteExp sm:px-2 sm:py-0.5';
+    btn.setAttribute('data-selected', 'false');
+    btn.textContent = '👁️';
+    btn.title = 'Hide better highscores and/or screen buttons';
+    btn.style.color = '#22c55e'; // Green by default (visible)
+    btn.onclick = toggleBetterHighscoresVisibility;
+    
+    betterHighscoresButton = btn;
+    
+    li.appendChild(btn);
+    ul.appendChild(li);
+    
+    // Update button state
+    updateBetterHighscoresButton();
+    
+    console.log('[Mod Settings] Better Highscores toggle button added');
+  }
+  tryInsert();
+};
+
+// Remove Better Highscores button
+const removeBetterHighscoresNavButton = () => {
+  const existingButton = document.querySelector('.better-highscores-toggle-btn');
+  if (existingButton) {
+    existingButton.parentElement?.remove();
+    betterHighscoresButton = null;
+    console.log('[Mod Settings] Better Highscores button removed');
+  }
+};
+
+// =======================
+// 18. Initialization
 // =======================
 
 function initBetterUI() {
@@ -5463,6 +5839,24 @@ function initBetterUI() {
       addPlayercountHeaderButton();
     } else {
       console.log('[Mod Settings] Playercount disabled in config');
+    }
+    
+    // Initialize last visited map button
+    if (config.showLastVisitedMapButton) {
+      console.log('[Mod Settings] Last visited map button enabled in config, initializing');
+      loadLastVisitedMap();
+      subscribeToMapChanges();
+      addLastMapNavButton();
+    } else {
+      console.log('[Mod Settings] Last visited map button disabled in config');
+    }
+    
+    // Initialize Better Highscores toggle button
+    if (config.showBetterHighscoresButton) {
+      console.log('[Mod Settings] Better Highscores button enabled in config, initializing');
+      addBetterHighscoresNavButton();
+    } else {
+      console.log('[Mod Settings] Better Highscores button disabled in config');
     }
     
     initTabObserver();
@@ -5585,6 +5979,15 @@ function cleanupBetterUI() {
         console.warn('[Mod Settings] Error removing playercount button:', error);
       }
     }
+    
+    // Cleanup last visited map button
+    unsubscribeFromMapChanges();
+    removeLastMapNavButton();
+    lastVisitedMap = null;
+    
+    // Cleanup Better Highscores button
+    removeBetterHighscoresNavButton();
+    betterHighscoresButton = null;
     
     // Clean up toast container
     const toastContainer = document.getElementById('better-ui-toast-container');
