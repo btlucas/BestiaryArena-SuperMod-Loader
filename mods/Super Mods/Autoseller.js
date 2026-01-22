@@ -210,7 +210,9 @@
         autoplantAlwaysDevourBelow: 49,
         autoplantAlwaysDevourEnabled: false,
         // Per-creature gene ranges to keep (prevents selling/devouring)
-        creatureKeepRanges: {} // { "CreatureName": { min: number, max: number } }
+        creatureKeepRanges: {}, // { "CreatureName": { min: number, max: number } }
+        // Per-equipment stat filters (which stats to disenchant)
+        equipmentStatFilters: {} // { "EquipmentName": { hp: boolean, ap: boolean, ad: boolean } }
     };
     
     // =======================
@@ -482,6 +484,50 @@
         const keepRange = getCreatureKeepRange(creatureName);
         if (!keepRange) return false;
         return totalGenes >= keepRange.min && totalGenes <= keepRange.max;
+    }
+    
+    /**
+     * Get equipment stat filter preferences for a specific equipment
+     * @param {string} equipmentName - Name of the equipment
+     * @returns {Object|null} Object with stats {hp: boolean, ap: boolean, ad: boolean} or null if not set
+     */
+    function getEquipmentStatFilter(equipmentName) {
+        const settings = getSettings();
+        const equipmentStatFilters = settings.equipmentStatFilters || {};
+        return equipmentStatFilters[equipmentName] || null;
+    }
+    
+    /**
+     * Set which stats to KEEP for a specific equipment (others will be disenchanted)
+     * @param {string} equipmentName - Name of the equipment
+     * @param {Object} stats - Object with stats to KEEP {hp: boolean, ap: boolean, ad: boolean}
+     */
+    function setEquipmentStatFilter(equipmentName, stats) {
+        const settings = getSettings();
+        const equipmentStatFilters = settings.equipmentStatFilters || {};
+        
+        equipmentStatFilters[equipmentName] = {
+            hp: !!stats.hp,
+            ap: !!stats.ap,
+            ad: !!stats.ad
+        };
+        
+        setSettings({ equipmentStatFilters });
+        console.log(`[Autoseller] Set stat filter for ${equipmentName}:`, equipmentStatFilters[equipmentName]);
+    }
+    
+    /**
+     * Clear stat filter for a specific equipment (will disenchant ALL stats - default behavior)
+     * @param {string} equipmentName - Name of the equipment
+     */
+    function clearEquipmentStatFilter(equipmentName) {
+        const settings = getSettings();
+        const equipmentStatFilters = settings.equipmentStatFilters || {};
+        
+        delete equipmentStatFilters[equipmentName];
+        
+        setSettings({ equipmentStatFilters });
+        console.log(`[Autoseller] Cleared stat filter for ${equipmentName}`);
     }
 
     // =======================
@@ -763,7 +809,7 @@
     
     /**
      * Check if equipment should be disenchanted based on autoduster settings
-     * @param {Object} equipment - Equipment details
+     * @param {Object} equipment - Equipment details (with hp, ap, ad stats)
      * @param {Object} settings - Autoseller settings
      * @returns {boolean} True if equipment should be disenchanted
      */
@@ -776,6 +822,30 @@
         
         // Only disenchant equipment that is explicitly in the disenchant list
         if (equipment.name && disenchantList.includes(equipment.name)) {
+            // Check if there's a stat filter for this equipment
+            const statFilter = getEquipmentStatFilter(equipment.name);
+            
+            if (statFilter) {
+                // INVERTED LOGIC: If stat filter is set, KEEP only the selected stats
+                // Disenchant if the primary stat is NOT in the keep list
+                const primaryStat = equipment.stat || 'unknown';
+                
+                // Keep this equipment if its primary stat is selected (return false = don't disenchant)
+                if (primaryStat === 'hp' && statFilter.hp) {
+                    return false; // Keep HP equipment
+                }
+                if (primaryStat === 'ap' && statFilter.ap) {
+                    return false; // Keep AP equipment
+                }
+                if (primaryStat === 'ad' && statFilter.ad) {
+                    return false; // Keep AD equipment
+                }
+                
+                // Primary stat is not in keep list - disenchant it
+                return true;
+            }
+            
+            // No stat filter set - disenchant all stats (default behavior)
             return true;
         }
         
@@ -2472,7 +2542,7 @@
     }
 
     // Helper function to create creature boxes for Autoplant
-    function createAutoplantCreaturesBox({title, items, selectedCreature, onSelectCreature, isIgnoreList = false, enableContextMenu = false, showKeepRangeLock = false}) {
+    function createAutoplantCreaturesBox({title, items, selectedCreature, onSelectCreature, isIgnoreList = false, enableContextMenu = false, showKeepRangeLock = false, isEquipment = false}) {
         const box = document.createElement('div');
         box.style.display = 'flex';
         box.style.flexDirection = 'column';
@@ -2591,33 +2661,56 @@
             item.addEventListener('mouseup', handleMouseUp);
             item.addEventListener('click', handleClick);
             
-            // Only add context menu for autoseller (autoplant/autosell), not for autosqueeze/autoduster
+            // Add context menu based on item type
             if (enableContextMenu) {
                 const handleContextMenu = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     
-                    // Show context menu at cursor position
-                    createCreatureContextMenu(name, e.clientX, e.clientY, () => {
-                        // Refresh the creature columns to show updated indicators
-                        // Find the columns container by traversing up the DOM tree
-                        let currentElement = item;
-                        let columnsContainer = null;
-                        while (currentElement && !columnsContainer) {
-                            currentElement = currentElement.parentElement;
-                            if (currentElement && currentElement.classList && currentElement.classList.contains('creature-columns-container')) {
-                                columnsContainer = currentElement;
+                    // Show appropriate context menu at cursor position
+                    if (isEquipment) {
+                        // Equipment context menu for stat filtering
+                        createEquipmentContextMenu(name, e.clientX, e.clientY, () => {
+                            // Refresh the equipment columns to show updated indicators
+                            let currentElement = item;
+                            let columnsContainer = null;
+                            while (currentElement && !columnsContainer) {
+                                currentElement = currentElement.parentElement;
+                                if (currentElement && currentElement.classList && currentElement.classList.contains('equipment-columns-container')) {
+                                    columnsContainer = currentElement;
+                                }
                             }
-                        }
-                        
-                        if (columnsContainer) {
-                            // Trigger a custom event that the parent can listen to
-                            const refreshEvent = new CustomEvent('creatureKeepRangeUpdated', {
-                                detail: { creatureName: name }
-                            });
-                            columnsContainer.dispatchEvent(refreshEvent);
-                        }
-                    });
+                            
+                            if (columnsContainer) {
+                                const refreshEvent = new CustomEvent('equipmentStatFilterUpdated', {
+                                    detail: { equipmentName: name }
+                                });
+                                columnsContainer.dispatchEvent(refreshEvent);
+                            }
+                        });
+                    } else {
+                        // Creature context menu for gene keep ranges
+                        createCreatureContextMenu(name, e.clientX, e.clientY, () => {
+                            // Refresh the creature columns to show updated indicators
+                            // Find the columns container by traversing up the DOM tree
+                            let currentElement = item;
+                            let columnsContainer = null;
+                            while (currentElement && !columnsContainer) {
+                                currentElement = currentElement.parentElement;
+                                if (currentElement && currentElement.classList && currentElement.classList.contains('creature-columns-container')) {
+                                    columnsContainer = currentElement;
+                                }
+                            }
+                            
+                            if (columnsContainer) {
+                                // Trigger a custom event that the parent can listen to
+                                const refreshEvent = new CustomEvent('creatureKeepRangeUpdated', {
+                                    detail: { creatureName: name }
+                                });
+                                columnsContainer.dispatchEvent(refreshEvent);
+                            }
+                        });
+                    }
                 };
                 
                 item.addEventListener('contextmenu', handleContextMenu);
@@ -2955,6 +3048,311 @@
         return menu;
     }
 
+    /**
+     * Creates a context menu for setting equipment stat filters
+     * @param {string} equipmentName - Name of the equipment
+     * @param {number} x - X position for the menu
+     * @param {number} y - Y position for the menu
+     * @param {Function} onClose - Callback when menu is closed
+     */
+    function createEquipmentContextMenu(equipmentName, x, y, onClose) {
+        // Close any existing context menu before opening a new one
+        if (openContextMenu && openContextMenu.closeMenu) {
+            openContextMenu.closeMenu();
+        }
+        
+        const currentFilter = getEquipmentStatFilter(equipmentName);
+        
+        // Create overlay to close menu on outside click
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.zIndex = '9998';
+        overlay.style.backgroundColor = 'transparent';
+        overlay.style.pointerEvents = 'auto';
+        overlay.style.cursor = 'default';
+        
+        // Create menu container
+        const menu = document.createElement('div');
+        menu.style.position = 'fixed';
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        menu.style.zIndex = '9999';
+        menu.style.minWidth = '220px';
+        menu.style.background = "url('https://bestiaryarena.com/_next/static/media/background-dark.95edca67.png') repeat";
+        menu.style.border = '4px solid transparent';
+        menu.style.borderImage = `url("https://bestiaryarena.com/_next/static/media/4-frame.a58d0c39.png") 6 fill stretch`;
+        menu.style.borderRadius = '6px';
+        menu.style.padding = '12px';
+        menu.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
+        
+        // Title
+        const title = document.createElement('div');
+        title.className = 'pixel-font-16';
+        title.textContent = equipmentName;
+        title.style.color = '#ffe066';
+        title.style.fontWeight = 'bold';
+        title.style.marginBottom = '8px';
+        title.style.textAlign = 'center';
+        menu.appendChild(title);
+        
+        // Description
+        const desc = document.createElement('div');
+        desc.className = 'pixel-font-14';
+        desc.textContent = 'Keep only these stats:';
+        desc.style.color = '#4CAF50';
+        desc.style.fontSize = '12px';
+        desc.style.marginBottom = '12px';
+        desc.style.textAlign = 'center';
+        menu.appendChild(desc);
+        
+        // Checkboxes container
+        const checkboxContainer = document.createElement('div');
+        checkboxContainer.style.display = 'flex';
+        checkboxContainer.style.flexDirection = 'column';
+        checkboxContainer.style.gap = '8px';
+        checkboxContainer.style.marginBottom = '12px';
+        
+        // Create checkboxes for each stat
+        const stats = [
+            { key: 'hp', label: 'HP (Health Points)', color: '#66bb6a' },
+            { key: 'ap', label: 'AP (Ability Power)', color: '#42a5f5' },
+            { key: 'ad', label: 'AD (Attack Damage)', color: '#ef5350' }
+        ];
+        
+        const checkboxes = {};
+        
+        stats.forEach(({ key, label, color }) => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '8px';
+            row.style.cursor = 'pointer';
+            row.style.padding = '4px';
+            row.style.borderRadius = '3px';
+            row.style.transition = 'background 0.2s';
+            
+            // Hover effect
+            row.addEventListener('mouseenter', () => {
+                row.style.background = 'rgba(255,255,255,0.05)';
+            });
+            row.addEventListener('mouseleave', () => {
+                row.style.background = 'none';
+            });
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `equipment-stat-${key}`;
+            checkbox.checked = currentFilter ? currentFilter[key] : false;
+            checkbox.style.cursor = 'pointer';
+            checkbox.style.width = '16px';
+            checkbox.style.height = '16px';
+            checkboxes[key] = checkbox;
+            
+            const labelEl = document.createElement('label');
+            labelEl.htmlFor = `equipment-stat-${key}`;
+            labelEl.className = 'pixel-font-14';
+            labelEl.textContent = label;
+            labelEl.style.color = color;
+            labelEl.style.fontSize = '12px';
+            labelEl.style.cursor = 'pointer';
+            labelEl.style.flex = '1';
+            
+            // Make the entire row clickable
+            row.addEventListener('click', (e) => {
+                if (e.target !== checkbox) {
+                    checkbox.checked = !checkbox.checked;
+                }
+            });
+            
+            row.appendChild(checkbox);
+            row.appendChild(labelEl);
+            checkboxContainer.appendChild(row);
+        });
+        
+        menu.appendChild(checkboxContainer);
+        
+        // Button container
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.display = 'flex';
+        buttonContainer.style.gap = '6px';
+        buttonContainer.style.justifyContent = 'center';
+        
+        // Save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'pixel-font-14';
+        saveButton.textContent = t('mods.autoseller.save') || 'Save';
+        applyButtonStyles(saveButton, true, 'green', {
+            width: '70px',
+            height: '24px',
+            fontSize: '11px'
+        });
+        
+        // Add hover effect to Save button
+        saveButton.addEventListener('mouseenter', () => {
+            saveButton.style.backgroundColor = '#2a4a2a';
+            saveButton.style.borderColor = '#4CAF50';
+        });
+        saveButton.addEventListener('mouseleave', () => {
+            saveButton.style.backgroundColor = UI_CONSTANTS.BUTTON_COLORS.ACTIVE_GREEN_BG;
+            saveButton.style.borderColor = UI_CONSTANTS.BUTTON_COLORS.BORDER;
+        });
+        
+        saveButton.addEventListener('click', () => {
+            const statPrefs = {
+                hp: checkboxes.hp.checked,
+                ap: checkboxes.ap.checked,
+                ad: checkboxes.ad.checked
+            };
+            
+            // Save the keep filter if at least one stat is selected
+            if (statPrefs.hp || statPrefs.ap || statPrefs.ad) {
+                setEquipmentStatFilter(equipmentName, statPrefs);
+            } else {
+                // If no stats selected to keep, clear the filter (disenchant ALL - default)
+                clearEquipmentStatFilter(equipmentName);
+            }
+            closeMenu();
+        });
+        
+        // Clear button
+        const clearButton = document.createElement('button');
+        clearButton.className = 'pixel-font-14';
+        clearButton.textContent = t('mods.autoseller.clear') || 'Clear';
+        applyButtonStyles(clearButton, false, 'red', {
+            width: '70px',
+            height: '24px',
+            fontSize: '11px'
+        });
+        
+        // Add hover effect to Clear button
+        clearButton.addEventListener('mouseenter', () => {
+            clearButton.style.backgroundColor = '#2a2a2a';
+            clearButton.style.color = '#ff6b6b';
+            clearButton.style.textShadow = UI_CONSTANTS.TEXT_SHADOW.RED;
+        });
+        clearButton.addEventListener('mouseleave', () => {
+            clearButton.style.backgroundColor = UI_CONSTANTS.BUTTON_COLORS.INACTIVE_BG;
+            clearButton.style.color = UI_CONSTANTS.BUTTON_COLORS.INACTIVE_TEXT;
+            clearButton.style.textShadow = UI_CONSTANTS.TEXT_SHADOW.NONE;
+        });
+        
+        clearButton.addEventListener('click', () => {
+            clearEquipmentStatFilter(equipmentName);
+            closeMenu();
+        });
+        
+        // Cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'pixel-font-14';
+        cancelButton.textContent = t('mods.autoseller.cancel') || 'Cancel';
+        applyButtonStyles(cancelButton, false, 'green', {
+            width: '70px',
+            height: '24px',
+            fontSize: '11px'
+        });
+        
+        // Add hover effect to Cancel button
+        cancelButton.addEventListener('mouseenter', () => {
+            cancelButton.style.backgroundColor = '#2a2a2a';
+            cancelButton.style.color = '#4CAF50';
+            cancelButton.style.textShadow = UI_CONSTANTS.TEXT_SHADOW.GREEN;
+        });
+        cancelButton.addEventListener('mouseleave', () => {
+            cancelButton.style.backgroundColor = UI_CONSTANTS.BUTTON_COLORS.INACTIVE_BG;
+            cancelButton.style.color = UI_CONSTANTS.BUTTON_COLORS.INACTIVE_TEXT;
+            cancelButton.style.textShadow = UI_CONSTANTS.TEXT_SHADOW.NONE;
+        });
+        
+        cancelButton.addEventListener('click', closeMenu);
+        
+        buttonContainer.appendChild(saveButton);
+        if (currentFilter) {
+            buttonContainer.appendChild(clearButton);
+        }
+        buttonContainer.appendChild(cancelButton);
+        menu.appendChild(buttonContainer);
+        
+        // Close menu function
+        function closeMenu() {
+            // Remove event listeners before removing from DOM
+            overlay.removeEventListener('mousedown', overlayClickHandler);
+            overlay.removeEventListener('click', overlayClickHandler);
+            document.removeEventListener('keydown', escHandler);
+            
+            // Remove modal click handlers if they exist
+            if (openContextMenu && openContextMenu.modalClickHandler && openContextMenu.modalContent) {
+                openContextMenu.modalContent.removeEventListener('mousedown', openContextMenu.modalClickHandler);
+                openContextMenu.modalContent.removeEventListener('click', openContextMenu.modalClickHandler);
+            }
+            
+            if (overlay.parentNode) {
+                overlay.parentNode.removeChild(overlay);
+            }
+            if (menu.parentNode) {
+                menu.parentNode.removeChild(menu);
+            }
+            // Clear the global reference
+            if (openContextMenu && (openContextMenu.overlay === overlay || openContextMenu.menu === menu)) {
+                openContextMenu = null;
+            }
+            if (onClose) {
+                onClose();
+            }
+        }
+        
+        // Store reference to this menu
+        openContextMenu = {
+            overlay: overlay,
+            menu: menu,
+            closeMenu: closeMenu
+        };
+        
+        // Close on overlay click/mousedown
+        const overlayClickHandler = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeMenu();
+        };
+        
+        // Close on ESC key
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                closeMenu();
+            }
+        };
+        
+        // Append to document first (overlay first, then menu on top)
+        document.body.appendChild(overlay);
+        document.body.appendChild(menu);
+        
+        // Attach event listeners after elements are in DOM
+        overlay.addEventListener('mousedown', overlayClickHandler);
+        overlay.addEventListener('click', overlayClickHandler);
+        document.addEventListener('keydown', escHandler);
+        
+        // Also close menu when clicking inside the autoseller modal (but outside the menu)
+        const modalContent = document.querySelector('[role="dialog"][data-state="open"]');
+        if (modalContent) {
+            const modalClickHandler = (e) => {
+                // Only close if click is not on the menu itself
+                if (!menu.contains(e.target)) {
+                    closeMenu();
+                }
+            };
+            
+            modalContent.addEventListener('mousedown', modalClickHandler);
+            modalContent.addEventListener('click', modalClickHandler);
+            
+            // Store handlers for cleanup
+            openContextMenu.modalClickHandler = modalClickHandler;
+            openContextMenu.modalContent = modalContent;
+        }
+    }
+
     // =======================
     // Shared Creature Filter Functions (for both autoplant and autosqueeze)
     // =======================
@@ -3267,7 +3665,8 @@
                 selectedCreature: null,
                 isIgnoreList: leftIsIgnore,
                 enableContextMenu: enableContextMenu,
-                onSelectCreature: leftHandler
+                onSelectCreature: leftHandler,
+                isEquipment: true
             });
             leftBox.style.width = '125px';
             leftBox.style.flex = '1 1 0';
@@ -3280,7 +3679,8 @@
                 selectedCreature: null,
                 isIgnoreList: rightIsIgnore,
                 enableContextMenu: enableContextMenu,
-                onSelectCreature: rightHandler
+                onSelectCreature: rightHandler,
+                isEquipment: true
             });
             rightBox.style.width = '125px';
             rightBox.style.flex = '1 1 0';
@@ -3691,6 +4091,7 @@
                     insertBefore: statusArea,
                     actionTitle: t('mods.autoseller.actionTitleDisenchant'),
                     reverseColumns: true, // Reverse columns for disenchant list
+                    enableContextMenu: true, // Enable right-click menu for stat filtering
                     onUpdate: () => {
                         // Disenchant list is applied during processing
                         // Update summary to show disenchant count

@@ -175,6 +175,7 @@
       "alwaysOpenHuntAnalyzer": "⚠️ Auto-abrir Hunt Analyzer",
       "alwaysOpenHuntAnalyzerWarning": "Abre automaticamente o painel do Hunt Analyzer ao iniciar novos jogos. Só funciona se o mod Hunt Analyzer estiver carregado.",
       "hideWebsiteFooter": "Ocultar Rodapé do Site",
+      "compactNavBar": "Barra de Navegação Compacta",
       "settingsAutoSave": "✓ As configurações salvam automaticamente quando alteradas",
       "menuCreatures": "Criaturas",
       "menuHuntAnalyzer": "Hunt Analyzer",

@@ -175,6 +175,7 @@
       "alwaysOpenHuntAnalyzer": "⚠️ Auto-open Hunt Analyzer",
       "alwaysOpenHuntAnalyzerWarning": "Automatically opens the Hunt Analyzer panel when starting new games. Only works if Hunt Analyzer mod is loaded.",
       "hideWebsiteFooter": "Hide Website Footer",
+      "compactNavBar": "Compact Navigation Bar",
       "settingsAutoSave": "✓ Settings auto-save when changed",
       "menuCreatures": "Creatures",
       "menuHuntAnalyzer": "Hunt Analyzer",
