@@ -489,14 +489,31 @@ function hasAutoplayControl(modName) {
 }
 
 // Check if Raid Hunter is currently active - Returns: True if active (boolean)
+// CRITICAL: Stamina Optimizer should only stop for ENABLED raids (raids user wants to do)
+// If raid is not enabled in Raid Hunter settings, Stamina Optimizer can continue
 function isRaidHunterActive() {
     try {
-        if (window.raidHunterIsCurrentlyRaiding?.()) {
+        // Check if an ENABLED raid is active (only raids user configured to do)
+        // Stamina Optimizer has lowest priority and should not interfere with configured raids
+        if (window.raidHunterIsEnabledRaidActive?.()) {
+            const priority = window.raidHunterGetCurrentRaidPriority?.();
+            const priorityLabel = priority === 1 ? 'HIGH' : priority === 2 ? 'MEDIUM' : priority === 3 ? 'LOW' : 'UNKNOWN';
+            console.log(`[Stamina Optimizer] Raid Hunter has ENABLED raid active (${priorityLabel} priority) - will not interfere`);
             return true;
         }
+        
+        // Check if Raid Hunter has control but raid is not enabled
+        // In this case, log but allow Stamina Optimizer to continue
+        if (window.raidHunterIsAnyRaidActive?.()) {
+            console.log('[Stamina Optimizer] Raid Hunter has raid active but NOT enabled in settings - continuing normally');
+            return false; // Raid not enabled, Stamina Optimizer can proceed
+        }
+        
+        // Fallback to AutoplayManager check
         return hasAutoplayControl('Raid Hunter');
     } catch (error) {
         console.error('[Stamina Optimizer] Error checking Raid Hunter status:', error);
+        // On error, be conservative and assume raid is active
         return false;
     }
 }
@@ -1310,6 +1327,21 @@ async function executeAction() {
 async function monitorStamina() {
     if (!isAutomationEnabled) {
         return;
+    }
+    
+    // CRITICAL: Check if ANY raid is active - Stamina Optimizer should NEVER interfere with raids
+    // If currently active and a raid starts, stop immediately
+    if (isCurrentlyActive && wasInitiatedByMod) {
+        if (isRaidHunterActive()) {
+            console.log('[Stamina Optimizer] ⚠️ Raid started while Stamina Optimizer active - stopping immediately');
+            try {
+                await stopAutoplay();
+                updateButton();
+            } catch (error) {
+                console.error('[Stamina Optimizer] Error stopping for raid:', error);
+            }
+            return;
+        }
     }
     
     // Check if we're still waiting for allModsLoaded signal or in grace period

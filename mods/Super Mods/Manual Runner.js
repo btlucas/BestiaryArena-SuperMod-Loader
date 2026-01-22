@@ -3152,6 +3152,23 @@ async function runAnalysis() {
     return;
   }
   
+  // CRITICAL: Check if Raid Hunter has a HIGH or MEDIUM priority raid active
+  // HIGH/MEDIUM priority raids have priority over Manual Runner
+  if (window.raidHunterIsRaidingHighPriority?.() || window.raidHunterIsRaidingMediumPriority?.()) {
+    console.log('[Manual Runner] ⚠️ Cannot start - Raid Hunter has HIGH/MEDIUM priority raid active');
+    
+    // Show notification to user
+    if (api && api.showModal) {
+      api.showModal({
+        title: '⚠️ Cannot Start Manual Runner',
+        content: '<p>Raid Hunter is currently processing a HIGH or MEDIUM priority raid.</p><p>Please wait for the raid to complete before starting Manual Runner.</p>',
+        buttons: [{ text: 'OK', primary: true }]
+      });
+    }
+    
+    return;
+  }
+  
   // Close any existing modals using modal manager (like Board Analyzer)
   modalManager.closeByType(MODAL_TYPES.RUNNING);
   activeRunningModal = null;
@@ -3357,6 +3374,37 @@ function init() {
   
   console.log('[Manual Runner] State exposed for mod coordination');
 }
+
+// Expose stop function globally for Raid Hunter coordination
+// Allows HIGH/MEDIUM priority raids to stop Manual Runner
+window.stopManualRunner = function() {
+  try {
+    console.log('[Manual Runner] Stop requested by external mod (likely Raid Hunter)');
+    
+    if (!analysisState.isRunning()) {
+      console.log('[Manual Runner] Not currently running - nothing to stop');
+      return true;
+    }
+    
+    console.log('[Manual Runner] Stopping analysis for HIGH/MEDIUM priority raid...');
+    analysisState.stop();
+    forceCloseAllModals();
+    
+    // Clear coordination flags
+    if (window.__modCoordination) {
+      window.__modCoordination.manualRunnerRunning = false;
+    }
+    if (window.manualRunnerState) {
+      window.manualRunnerState.isRunning = false;
+    }
+    
+    console.log('[Manual Runner] ✅ Stopped successfully for raid');
+    return true;
+  } catch (error) {
+    console.error('[Manual Runner] Error stopping for raid:', error);
+    return false;
+  }
+};
 
 // =======================
 // 7. Cleanup System

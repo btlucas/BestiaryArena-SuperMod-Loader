@@ -47,7 +47,7 @@ const MODAL_OPEN_DELAY = 1000;
 // User-configurable delays
 const DEFAULT_START_DELAY = 3;         // 3 seconds default (user-configurable 1-10)
 const MAX_START_DELAY = 10;            // 10 seconds maximum
-const STAMINA_MONITOR_INTERVAL = 30000;
+const STAMINA_MONITOR_INTERVAL = 5000;
 const RAID_STATUS_UPDATE_INTERVAL = 600000; // 10 minutes
 const RAID_END_CHECK_INTERVAL = 30000;
 
@@ -121,6 +121,100 @@ function getRaidPriority(raidName) {
     }
 }
 
+/**
+ * Get a per-raid setting, falling back to global setting if not set
+ * @param {string} raidName - Name of the raid
+ * @param {string} settingKey - Key of the setting to retrieve
+ * @returns {*} The setting value or undefined if not found
+ */
+function getRaidSetting(raidName, settingKey) {
+    try {
+        const settings = loadSettings();
+        const raidSettings = settings.raidSettings || {};
+        const raidSetting = raidSettings[raidName];
+        if (raidSetting && raidSetting.hasOwnProperty(settingKey)) {
+            return raidSetting[settingKey];
+        }
+        // Fall back to global setting
+        return settings[settingKey];
+    } catch (error) {
+        console.error('[Raid Hunter] Error getting raid setting:', error);
+        const settings = loadSettings();
+        return settings[settingKey];
+    }
+}
+
+/**
+ * Get the setup method for a specific raid
+ * If per-raid setting is "default", uses global setupMethod
+ * @param {string} raidName - Name of the raid
+ * @returns {string} The setup method to use
+ */
+function getRaidSetupMethod(raidName) {
+    try {
+        const settings = loadSettings();
+        const raidSettings = settings.raidSettings || {};
+        const raidSetting = raidSettings[raidName];
+        if (raidSetting && raidSetting.setupMethod) {
+            // If "default" is set, use global setting
+            if (raidSetting.setupMethod === 'default') {
+                return settings.setupMethod || 'Auto-setup';
+            }
+            return raidSetting.setupMethod;
+        }
+        // Fall back to global setting
+        return settings.setupMethod || 'Auto-setup';
+    } catch (error) {
+        console.error('[Raid Hunter] Error getting raid setup method:', error);
+        const settings = loadSettings();
+        return settings.setupMethod || 'Auto-setup';
+    }
+}
+
+/**
+ * Get the autoRefillStamina setting for a specific raid (per-raid boolean)
+ * @param {string} raidName - Name of the raid
+ * @returns {boolean} True if autoRefillStamina is enabled for this raid
+ */
+function getRaidAutoRefillStamina(raidName) {
+    try {
+        const settings = loadSettings();
+        const raidSettings = settings.raidSettings || {};
+        const raidSetting = raidSettings[raidName];
+        if (raidSetting && raidSetting.hasOwnProperty('autoRefillStamina')) {
+            return raidSetting.autoRefillStamina === true;
+        }
+        // Per-raid setting: default to true if not set
+        return true;
+    } catch (error) {
+        console.error('[Raid Hunter] Error getting raid autoRefillStamina:', error);
+        return true;
+    }
+}
+
+/**
+ * Check if a raid has custom per-raid settings
+ * @param {string} raidName - Name of the raid
+ * @returns {boolean} True if the raid has custom settings
+ */
+function hasRaidCustomSettings(raidName) {
+    try {
+        const settings = loadSettings();
+        const raidSettings = settings.raidSettings || {};
+        const raidSetting = raidSettings[raidName];
+        if (!raidSetting) {
+            return false;
+        }
+        // Check if autoRefillStamina is explicitly set (not default)
+        // or if setupMethod is set and not 'default'
+        return raidSetting.hasOwnProperty('autoRefillStamina') || 
+               (raidSetting.setupMethod && raidSetting.setupMethod !== 'default');
+    } catch (error) {
+        console.error('[Raid Hunter] Error checking raid custom settings:', error);
+        return false;
+    }
+}
+
 // Track if all mods have finished loading
 let allModsLoaded = false;
 
@@ -131,6 +225,12 @@ let allModsLoaded = false;
  */
 function isBetterTaskerActive() {
     try {
+        // Use coordination system if available
+        if (window.ModCoordination) {
+            return window.ModCoordination.isModActive('Better Tasker');
+        }
+        
+        // Fallback to old method for backward compatibility
         // Check window.betterTaskerState (primary detection)
         if (!window.betterTaskerState) {
             return false;
@@ -184,16 +284,19 @@ function isBetterTaskerActive() {
 // Helper function to check if Better Boosted Maps is active
 function isBoostedMapsActive() {
     try {
+        // Use coordination system if available
+        if (window.ModCoordination) {
+            return window.ModCoordination.isModActive('Better Boosted Maps');
+        }
+        
+        // Fallback to old method for backward compatibility
         // Method 1: Check global boostedMapsState
         if (window.boostedMapsState && window.boostedMapsState.isEnabled) {
             return window.boostedMapsState.isCurrentlyFarming === true;
         }
-        // Method 2: Check AutoplayManager owner (including Stamina Optimizer)
-        if (window.AutoplayManager) {
-            const currentOwner = window.AutoplayManager.getCurrentOwner();
-            if (currentOwner === 'Better Boosted Maps' || currentOwner === 'Stamina Optimizer') {
-                return true;
-            }
+        // Method 2: Check AutoplayManager owner
+        if (window.AutoplayManager && window.AutoplayManager.getCurrentOwner() === 'Better Boosted Maps') {
+            return true;
         }
         return false;
     } catch (error) {
@@ -202,62 +305,99 @@ function isBoostedMapsActive() {
     }
 }
 
-// Helper function to check if Manual Runner is active
+// Helper function to check if Manual Runner is currently active
 function isManualRunnerActive() {
     try {
-        // Check window.manualRunnerState (primary detection)
-        if (!window.manualRunnerState) {
-            return false;
+        // Use coordination system if available
+        if (window.ModCoordination) {
+            return window.ModCoordination.isModActive('Manual Runner');
         }
         
-        const state = window.manualRunnerState;
-        
-        // Check if Manual Runner is currently running or stopping
-        if (state.isRunning && state.isRunning()) {
-            console.log('[Raid Hunter] ✅ Manual Runner ACTIVE (running)');
-            return true;
-        }
-        
-        if (state.isStopping && state.isStopping()) {
-            console.log('[Raid Hunter] ✅ Manual Runner ACTIVE (stopping)');
+        // Fallback to old method
+        if (window.manualRunnerState?.isRunning === true) {
             return true;
         }
         
         return false;
     } catch (error) {
-        console.error('[Raid Hunter] ⚠️ Error checking Manual Runner state:', error);
+        console.error('[Raid Hunter] Error checking Manual Runner status:', error);
         return false;
     }
 }
 
-// Helper function to stop Manual Runner for high-priority raids
-function stopManualRunnerForRaid() {
+// Stop Manual Runner if it's currently active (for HIGH/MEDIUM priority raids)
+function stopManualRunnerIfActive() {
     try {
-        if (!window.manualRunnerState) {
-            return false;
+        if (!isManualRunnerActive()) {
+            console.log('[Raid Hunter] Manual Runner is not active - no need to stop');
+            return;
         }
         
-        const state = window.manualRunnerState;
+        console.log('[Raid Hunter] ⚠️ Manual Runner is active - stopping it for HIGH/MEDIUM priority raid');
         
-        if (state.canInterrupt && state.canInterrupt() && state.forceStop) {
-            console.log('[Raid Hunter] 🛑 Stopping Manual Runner for raid');
-            return state.forceStop();
+        // Try to stop via exposed function
+        if (typeof window.stopManualRunner === 'function') {
+            console.log('[Raid Hunter] Calling window.stopManualRunner()');
+            window.stopManualRunner();
+            return;
         }
         
-        return false;
+        // Try via ModCoordination
+        if (window.ModCoordination) {
+            console.log('[Raid Hunter] Requesting Manual Runner to stop via ModCoordination');
+            window.ModCoordination.requestModStop?.('Manual Runner', 'Raid Hunter');
+            return;
+        }
+        
+        // Fallback: try to find and click stop button
+        console.log('[Raid Hunter] Attempting to find and click Manual Runner stop button');
+        const stopButton = Array.from(document.querySelectorAll('button')).find(btn => 
+            btn.textContent.includes('Stop') || btn.textContent.includes('Parar')
+        );
+        if (stopButton && stopButton.closest('[data-modal-type="manualRunner"]')) {
+            console.log('[Raid Hunter] Found Manual Runner stop button - clicking');
+            stopButton.click();
+        }
+        
     } catch (error) {
-        console.error('[Raid Hunter] ⚠️ Error stopping Manual Runner:', error);
-        return false;
+        console.error('[Raid Hunter] Error stopping Manual Runner:', error);
     }
 }
 
 // Helper function to check if raid processing can proceed based on priority
 function canProcessRaidWithPriority(raidPriority, context = 'raid processing') {
-    // Board Analyzer always blocks (highest priority system task)
-    if (isBoardAnalyzerRunning) {
-        console.log(`[Raid Hunter] Board Analyzer running during ${context} - skipping`);
-        return false;
+    // CRITICAL: HIGH and MEDIUM priority raids now STOP Manual Runner instead of waiting
+    // Only LOW priority raids wait for Manual Runner to finish
+    
+    // Board Analyzer always blocks ALL raids (highest priority)
+    if (window.ModCoordination) {
+        const boardAnalyzerActive = window.ModCoordination.isModActive('Board Analyzer');
+        if (boardAnalyzerActive) {
+            console.log(`[Raid Hunter] Cannot run during ${context} - Board Analyzer is active`);
+            return false;
+        }
+    } else {
+        if (isBoardAnalyzerRunning) {
+            console.log(`[Raid Hunter] Board Analyzer running during ${context} - skipping`);
+            return false;
+        }
     }
+    
+    // Manual Runner check - only blocks LOW priority raids
+    // HIGH and MEDIUM priority raids will stop Manual Runner instead
+    if (raidPriority === RAID_PRIORITY.LOW) {
+        if (window.ModCoordination) {
+            const manualRunnerActive = window.ModCoordination.isModActive('Manual Runner');
+            if (manualRunnerActive) {
+                console.log(`[Raid Hunter] LOW priority raid waiting - Manual Runner is active`);
+                return false;
+            }
+        } else if (isManualRunnerActive()) {
+            console.log(`[Raid Hunter] LOW priority raid waiting - Manual Runner is active`);
+            return false;
+        }
+    }
+    // HIGH and MEDIUM priority raids skip Manual Runner check and will stop it
     
     // Automation must be enabled
     if (!isAutomationActive()) {
@@ -265,28 +405,13 @@ function canProcessRaidWithPriority(raidPriority, context = 'raid processing') {
         return false;
     }
     
-    // High and Medium priority raids always proceed (do not yield to Better Tasker or Manual Runner)
+    // High and Medium priority raids always proceed (do not yield to Better Tasker)
     if (raidPriority === RAID_PRIORITY.HIGH || raidPriority === RAID_PRIORITY.MEDIUM) {
-        // Stop Manual Runner if it's running
-        if (isManualRunnerActive()) {
-            const priorityLabel = raidPriority === RAID_PRIORITY.HIGH ? 'HIGH' : 'MEDIUM';
-            console.log(`[Raid Hunter] ${priorityLabel} priority raid detected - stopping Manual Runner`);
-            const stopped = stopManualRunnerForRaid();
-            if (stopped) {
-                console.log(`[Raid Hunter] Manual Runner stopped successfully for ${priorityLabel} priority raid`);
-            }
-        }
         return true;
     }
     
-    // Low priority raids yield to Better Tasker and Manual Runner
+    // Low priority raids yield to Better Tasker
     if (raidPriority === RAID_PRIORITY.LOW) {
-        // Check Manual Runner first (higher priority than low raids)
-        if (isManualRunnerActive()) {
-            console.log(`[Raid Hunter] Manual Runner is active - low priority raid waiting`);
-            return false;
-        }
-        
         const betterTaskerState = window.betterTaskerState;
         
         // Check if Better Tasker is in "New Task+" mode - if so, allow low priority raids to proceed
@@ -316,17 +441,17 @@ function canProcessRaidWithPriority(raidPriority, context = 'raid processing') {
             }
         }
         
-        // Better Tasker and Manual Runner not blocking - low priority raid can proceed
-        console.log(`[Raid Hunter] Better Tasker and Manual Runner not blocking - low priority raid can proceed`);
+        // Better Tasker not blocking - low priority raid can proceed
+        console.log(`[Raid Hunter] Better Tasker not blocking - low priority raid can proceed`);
         return true;
     }
     
     return true;
 }
 
-// Helper function to check if raid processing can proceed (backwards compatibility)
+// Helper function to check if raid processing can proceed
 function canProcessRaid(context = 'raid processing') {
-    if (isManualRunnerActive()) {
+    if (window.ModCoordination?.isModActive('Manual Runner')) {
         console.log(`[Raid Hunter] Manual Runner running during ${context} - skipping`);
         return false;
     }
@@ -431,6 +556,12 @@ function cancelCurrentRaid(reason = 'unknown') {
     console.log(`[Raid Hunter] Cancelling raid: ${reason}`);
     isCurrentlyRaiding = false;
     currentRaidInfo = null;
+    
+    // Update coordination system state
+    if (window.ModCoordination) {
+        window.ModCoordination.updateModState('Raid Hunter', { active: false });
+    }
+    
     performRaidCleanup();
 }
 
@@ -454,7 +585,7 @@ function performRaidCleanup() {
         if (raidName) {
             const settings = loadSettings();
             const raidFloors = settings.raidFloors || {};
-            if (raidFloors[raidName] === 'auto') {
+            if (isAutoFloorMode(raidFloors[raidName])) {
                 console.log('[Raid Hunter] Keeping auto floor monitoring active - still on raid map with auto floor mode');
                 return; // Don't stop auto floor monitoring
             }
@@ -558,10 +689,6 @@ const EVENT_TO_ROOM_MAPPING = {
     'An Arcanist Ritual': 'vdhar'
 };
 
-// Temporary event raids that should show the "Event" badge in UI
-const TEMPORARY_EVENT_RAIDS = [
-];
-
 // ============================================================================
 // 1.1. STAMINA MONITORING FUNCTIONS
 // ============================================================================
@@ -658,8 +785,13 @@ function startStaminaTooltipMonitoring(onRecovered, requiredStamina = null) {
     staminaRecoveryCallback = onRecovered;
     let hasStaminaIssue = true;
     
-    // PRIMARY METHOD: Interval-based API checking for progress tracking (every 5 seconds)
+        // PRIMARY METHOD: Interval-based API checking for progress tracking (every 5 seconds)
     const staminaCheckInterval = setInterval(() => {
+        // Skip if page is transitioning (visibility change in progress)
+        if (isPageVisibilityTransitioning) {
+            return;
+        }
+        
         const currentStamina = getCurrentStamina();
         
         // Also check if tooltip disappeared (double-check)
@@ -677,22 +809,31 @@ function startStaminaTooltipMonitoring(onRecovered, requiredStamina = null) {
             clearInterval(staminaCheckInterval);
             stopStaminaTooltipMonitoring();
             
-            // Execute saved callback
-            if (typeof callback === 'function') {
+            // Execute saved callback (only if not transitioning)
+            if (typeof callback === 'function' && !isPageVisibilityTransitioning) {
                 callback();
+            } else if (isPageVisibilityTransitioning) {
+                console.log('[Raid Hunter] Skipping stamina recovery callback - page visibility transition in progress');
+                // Restart monitoring since we skipped the callback
+                startStaminaTooltipMonitoring(callback, requiredStamina);
             }
         } else if (tooltipStillExists && requiredStamina) {
             // Show progress if we know required stamina
             const timeRemaining = Math.max(0, requiredStamina - currentStamina);
             console.log(`[Raid Hunter] Waiting for stamina (${currentStamina}/${requiredStamina}) - ~${timeRemaining} min remaining`);
         }
-    }, 15000); // Check every 15 seconds (stamina regenerates 1 per minute)
+    }, STAMINA_MONITOR_INTERVAL); // Check every 5 seconds (stamina regenerates 1 per minute)
     
     // Store interval for cleanup
     window.raidHunterStaminaInterval = staminaCheckInterval;
     
     // BACKUP METHOD: MutationObserver for tooltip removal (instant detection)
     staminaTooltipObserver = new MutationObserver((mutations) => {
+        // Skip if page is transitioning (visibility change in progress)
+        if (isPageVisibilityTransitioning) {
+            return;
+        }
+        
         for (const mutation of mutations) {
             mutation.removedNodes.forEach((node) => {
                 if (node.nodeType === Node.ELEMENT_NODE) {
@@ -711,9 +852,13 @@ function startStaminaTooltipMonitoring(onRecovered, requiredStamina = null) {
                         clearInterval(staminaCheckInterval);
                         stopStaminaTooltipMonitoring();
                         
-                        // Execute saved callback
-                        if (typeof callback === 'function') {
+                        // Execute saved callback (only if not transitioning)
+                        if (typeof callback === 'function' && !isPageVisibilityTransitioning) {
                             callback();
+                        } else if (isPageVisibilityTransitioning) {
+                            console.log('[Raid Hunter] Skipping stamina recovery callback - page visibility transition in progress');
+                            // Restart monitoring since we skipped the callback
+                            startStaminaTooltipMonitoring(callback, requiredStamina);
                         }
                     }
                 }
@@ -738,15 +883,209 @@ function stopStaminaTooltipMonitoring() {
         clearInterval(window.raidHunterStaminaInterval);
         window.raidHunterStaminaInterval = null;
     }
-    
+
     // Disconnect MutationObserver
     if (staminaTooltipObserver) {
         staminaTooltipObserver.disconnect();
         staminaTooltipObserver = null;
         staminaRecoveryCallback = null;
     }
-    
+
     console.log('[Raid Hunter] Stamina monitoring stopped');
+}
+
+function showToast(message, duration = 5000) {
+    try {
+        // Use custom toast implementation (same as Better Boosted Maps)
+        // Get or create the main toast container
+        let mainContainer = document.getElementById('raid-hunter-toast-container');
+        if (!mainContainer) {
+            mainContainer = document.createElement('div');
+            mainContainer.id = 'raid-hunter-toast-container';
+            mainContainer.style.cssText = `
+                position: fixed;
+                z-index: 9999;
+                inset: 16px 16px 64px;
+                pointer-events: none;
+            `;
+            document.body.appendChild(mainContainer);
+        }
+
+        // Count existing toasts to calculate stacking position
+        const existingToasts = mainContainer.querySelectorAll('.toast-item');
+        const stackOffset = existingToasts.length * 46;
+
+        // Create the flex container for this specific toast
+        const flexContainer = document.createElement('div');
+        flexContainer.className = 'toast-item';
+        flexContainer.style.cssText = `
+            left: 0px;
+            right: 0px;
+            display: flex;
+            position: absolute;
+            transition: 230ms cubic-bezier(0.21, 1.02, 0.73, 1);
+            transform: translateY(-${stackOffset}px);
+            bottom: 0px;
+            justify-content: flex-end;
+        `;
+
+        // Create toast button
+        const toast = document.createElement('button');
+        toast.className = 'non-dismissable-dialogs shadow-lg animate-in fade-in zoom-in-95 slide-in-from-top lg:slide-in-from-bottom';
+
+        // Create widget structure
+        const widgetTop = document.createElement('div');
+        widgetTop.className = 'widget-top h-2.5';
+
+        const widgetBottom = document.createElement('div');
+        widgetBottom.className = 'widget-bottom pixel-font-16 flex items-center gap-2 px-2 py-1 text-whiteHighlight';
+
+        // Add icon (raid icon for raids)
+        const iconImg = document.createElement('img');
+        iconImg.alt = 'raid';
+        iconImg.src = 'https://bestiaryarena.com/assets/icons/raid.png';
+        iconImg.className = 'pixelated';
+        iconImg.style.cssText = 'width: 16px; height: 16px;';
+        widgetBottom.appendChild(iconImg);
+
+        // Add message
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'text-left';
+        messageDiv.textContent = message;
+        widgetBottom.appendChild(messageDiv);
+
+        // Assemble toast
+        toast.appendChild(widgetTop);
+        toast.appendChild(widgetBottom);
+        flexContainer.appendChild(toast);
+        mainContainer.appendChild(flexContainer);
+
+        console.log(`[Raid Hunter] Toast shown: ${message}`);
+
+        // Auto-remove after duration
+        setTimeout(() => {
+            if (flexContainer && flexContainer.parentNode) {
+                flexContainer.parentNode.removeChild(flexContainer);
+
+                // Update positions of remaining toasts
+                const toasts = mainContainer.querySelectorAll('.toast-item');
+                toasts.forEach((toast, index) => {
+                    const offset = index * 46;
+                    toast.style.transform = `translateY(-${offset}px)`;
+                });
+            }
+        }, duration);
+
+    } catch (error) {
+        console.error('[Raid Hunter] Error showing toast:', error);
+    }
+}
+
+// Create continuous stamina monitoring callback
+function createStaminaMonitoringCallback(logPrefix, successMessage) {
+    return () => {
+        console.log(`[Raid Hunter] ${logPrefix}`);
+
+        // Check if still valid to continue
+        if (!isAutomationActive() || !isCurrentlyRaiding) {
+            console.log('[Raid Hunter] Raid cancelled during stamina wait');
+            stopStaminaTooltipMonitoring();
+            return;
+        }
+
+        // Check if user is still on correct raid map
+        if (!isOnCorrectRaidMap()) {
+            console.log('[Raid Hunter] User changed map - stopping stamina monitoring');
+            stopStaminaTooltipMonitoring();
+            handleRaidFailure('User changed map during stamina wait');
+            return;
+        }
+
+        // Check if autoplay session is actually running (not just mode enabled)
+        const boardContext = globalThis.state.board.getSnapshot().context;
+        const isAutoplayMode = boardContext.mode === 'autoplay';
+        const isAutoplaySessionRunning = boardContext.isRunning || boardContext.autoplayRunning;
+
+        if (isAutoplayMode && isAutoplaySessionRunning) {
+            // Autoplay session is actually running - just continue monitoring
+            console.log('[Raid Hunter] Autoplay session running - continuing stamina monitoring');
+            const requiredStamina = getStaminaCost();
+            const callback = createStaminaMonitoringCallback(logPrefix, successMessage);
+            startStaminaTooltipMonitoring(callback, requiredStamina);
+        } else {
+            // Autoplay session is not running - need to click Start button
+            console.log('[Raid Hunter] Autoplay session not running - clicking Start button');
+
+            // Wait if page is transitioning (visibility change in progress)
+            if (isPageVisibilityTransitioning) {
+                console.log('[Raid Hunter] Page visibility transition in progress - waiting before clicking Start');
+                setTimeout(() => {
+                    // Retry the callback after transition completes
+                    const callback = createStaminaMonitoringCallback(logPrefix, successMessage);
+                    callback();
+                }, 2500); // Wait slightly longer than transition flag
+                return;
+            }
+
+            // Find and click Start button with retry logic
+            const tryClickStart = (retries = 3, delay = 500) => {
+                const startButton = findButtonByText('Start');
+                if (!startButton) {
+                    if (retries > 0) {
+                        console.log(`[Raid Hunter] Start button not found - retrying in ${delay}ms (${retries} retries left)`);
+                        setTimeout(() => tryClickStart(retries - 1, delay), delay);
+                    } else {
+                        console.log('[Raid Hunter] Start button not found after stamina recovery (all retries exhausted)');
+                        // Don't cancel raid - just restart monitoring in case button appears later
+                        const callback = createStaminaMonitoringCallback(logPrefix, successMessage);
+                        startStaminaTooltipMonitoring(callback);
+                        return;
+                    }
+                    return;
+                }
+
+                console.log('[Raid Hunter] Clicking Start button after stamina recovery...');
+                startButton.click();
+
+                // Show success toast if message provided
+                if (successMessage) {
+                    showToast(successMessage);
+                }
+            };
+
+            tryClickStart();
+
+            // Set up stamina depletion monitoring for the new autoplay session
+            const handleStaminaDepletion = () => {
+                const continuousStaminaMonitoring = createStaminaMonitoringCallback(
+                    'Stamina depleted during raid - restarting',
+                    'Raid restarted after stamina recovery'
+                );
+
+                const requiredStamina = getStaminaCost();
+                startStaminaTooltipMonitoring(continuousStaminaMonitoring, requiredStamina);
+            };
+
+            // Watch for stamina depletion during autoplay
+            const watchStaminaDepletion = () => {
+                const depletionCheckInterval = setInterval(() => {
+                    const currentCheck = hasInsufficientStamina();
+                    if (currentCheck.insufficient) {
+                        console.log('[Raid Hunter] Stamina depleted during autoplay - starting recovery monitoring');
+                        clearInterval(depletionCheckInterval);
+                        handleStaminaDepletion();
+                    }
+                }, STAMINA_MONITOR_INTERVAL); // Check every 5 seconds
+
+                // Store for cleanup
+                window.raidHunterDepletionInterval = depletionCheckInterval;
+            };
+
+            watchStaminaDepletion();
+
+            console.log('[Raid Hunter] Autoplay started after stamina recovery');
+        }
+    };
 }
 
 // ============================================================================
@@ -852,71 +1191,11 @@ function findSetupButton(option) {
 // ============================================================================
 
 // ============================================================================
-// 2.1. CONTROL MANAGER CLASS
+// 2.1. CONTROL MANAGER ACCESS
 // ============================================================================
-
-// Reusable control manager class for coordination between mods
-class ControlManager {
-    constructor(name, uniqueProperties = {}) {
-        this.name = name;
-        this.currentOwner = null;
-        
-        // Add any unique properties specific to this manager
-        Object.assign(this, uniqueProperties);
-    }
-    
-    // Request control (returns true if successful)
-    requestControl(modName) {
-        if (this.currentOwner === null || this.currentOwner === modName) {
-            this.currentOwner = modName;
-            console.log(`[${this.name}] Control granted to ${modName}`);
-            return true;
-        }
-        console.log(`[${this.name}] Control denied to ${modName} (currently owned by ${this.currentOwner})`);
-        return false;
-    }
-    
-    // Release control
-    releaseControl(modName) {
-        if (this.currentOwner === modName) {
-            this.currentOwner = null;
-            console.log(`[${this.name}] Control released by ${modName}`);
-            return true;
-        }
-        return false;
-    }
-    
-    // Check if mod has control
-    hasControl(modName) {
-        return this.currentOwner === modName;
-    }
-    
-    // Get current owner
-    getCurrentOwner() {
-        return this.currentOwner;
-    }
-}
-
-// ============================================================================
-// 2.2. CONTROL MANAGER INSTANCES
-// ============================================================================
-
-// Quest Button Manager for coordination between mods
-window.QuestButtonManager = window.QuestButtonManager || new ControlManager('Quest Button Manager', {
-    originalState: null,
-    validationInterval: null
-});
-
-// Autoplay Manager for coordination between mods
-window.AutoplayManager = window.AutoplayManager || new ControlManager('Autoplay Manager', {
-    originalMode: null,
-    isControlledByOther(modName) {
-        return this.currentOwner !== null && this.currentOwner !== modName;
-    }
-});
-
-// Bestiary Automator Settings Manager for coordination between mods
-window.BestiaryAutomatorSettingsManager = window.BestiaryAutomatorSettingsManager || new ControlManager('Bestiary Automator Settings Manager');
+// Control managers are provided by mod-coordination.mjs
+// Access them via window.QuestButtonManager, window.AutoplayManager, etc.
+// These are initialized by ModCoordination.initializeDefaultManagers()
 
 // ============================================================================
 // 2.3. CENTRALIZED STATE RESET FUNCTION
@@ -1235,6 +1514,11 @@ function resetState(resetType = 'full') {
             raidRetryCount = 0;
             lastRaidTime = 0;
             
+            // Update coordination system state
+            if (window.ModCoordination) {
+                window.ModCoordination.updateModState('Raid Hunter', { active: false, enabled: false });
+            }
+            
             // Stop quest button validation and restore appearance
             stopAutoplayStateMonitoring();
             stopQuestButtonValidation();
@@ -1315,6 +1599,19 @@ function resetState(resetType = 'full') {
                 clearTimeout(retryTimeout);
                 retryTimeout = null;
             }
+            if (autoplayStoppedTimeout) {
+                clearTimeout(autoplayStoppedTimeout);
+                autoplayStoppedTimeout = null;
+            }
+            if (raidProcessingTimeout) {
+                clearTimeout(raidProcessingTimeout);
+                raidProcessingTimeout = null;
+            }
+            
+            // Reset state tracking
+            lastAutoplayState = null;
+            isCheckingExistingRaids = false;
+            isProcessingRaid = false;
         };
         
         const resetModalState = () => {
@@ -1403,8 +1700,20 @@ let isCurrentlyRaiding = false;
 let currentRaidInfo = null;
 
 // Auto floor state management (per-raid)
-// Stores current auto floor (1-10) and consecutive defeat count for each raid when in "auto" mode
+// Stores current auto floor (1-10 or 1-15) and consecutive defeat count for each raid when in "auto-10" or "auto-15" mode
 let autoFloorState = {}; // { raidName: { currentFloor: number, consecutiveDefeats: number } }
+
+// Helper function to check if a floor setting is an auto mode
+function isAutoFloorMode(floorSetting) {
+    return floorSetting === 'auto-10' || floorSetting === 'auto-15';
+}
+
+// Helper function to get the max floor for an auto mode
+function getAutoMaxFloor(floorSetting) {
+    if (floorSetting === 'auto-10') return 10;
+    if (floorSetting === 'auto-15') return 15;
+    return null; // Not an auto mode
+}
 
 // Raid retry system
 let raidRetryCount = 0;
@@ -1434,12 +1743,25 @@ let autoFloorGameEndSubscription = null;
 let autoFloorBoardSubscription = null;
 let autoFloorLastProcessedSeed = null;
 
+// Track currently open context menu { overlay, menu, closeMenu }
+let openContextMenu = null;
+
 // Page visibility handling for foreground/background transitions
 let pageVisibilityHandler = null;
 let lastPageVisibilityChange = 0;
+let isPageVisibilityTransitioning = false; // Flag to prevent stamina callbacks during visibility transitions
 
 // Window message listener for allModsLoaded signal (stored for cleanup)
 let windowMessageHandler = null;
+
+// Autoplay state tracking for debouncing
+let lastAutoplayState = null;
+let autoplayStoppedTimeout = null;
+
+// Processing guards to prevent duplicate operations
+let isCheckingExistingRaids = false;
+let isProcessingRaid = false;
+let raidProcessingTimeout = null;
 
 // Toast detection for fight icon (now consolidated with quest log observer)
 
@@ -1456,6 +1778,14 @@ function handlePageVisibilityChange() {
         
         if (document.visibilityState === 'visible') {
             console.log('[Raid Hunter] Page became visible - checking for active raids and reclaiming control if needed');
+            
+            // Set flag to prevent stamina callbacks from interfering during visibility transition
+            isPageVisibilityTransitioning = true;
+            
+            // Clear flag after a short delay to allow DOM to stabilize
+            setTimeout(() => {
+                isPageVisibilityTransitioning = false;
+            }, 2000); // 2 second delay for DOM to stabilize
             
             // CRITICAL: Check game state FIRST (works even if mod was reloaded and variables were reset)
             const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
@@ -1522,6 +1852,45 @@ function handlePageVisibilityChange() {
             
             if (hasActiveRaids && questButtonOwner !== 'Raid Hunter') {
                 console.log('[Raid Hunter] Active raids detected but quest button not controlled by Raid Hunter - checking for new raids');
+                
+                // CRITICAL: Check if we're already on a raid map (even if not in autoplay mode)
+                // This handles the case where navigation completed but autoplay was blocked (e.g., by Stamina Optimizer)
+                if (currentRoomId) {
+                    const raidState = globalThis.state?.raids?.getSnapshot?.();
+                    const activeRaids = raidState?.context?.list || [];
+                    const onRaidMap = activeRaids.some(raid => raid.roomId === currentRoomId);
+                    
+                    if (onRaidMap) {
+                        // We're on a raid map but not in autoplay - restore state and enable autoplay
+                        const raid = activeRaids.find(r => r.roomId === currentRoomId);
+                        const raidName = getEventNameForRoomId(currentRoomId);
+                        console.log(`[Raid Hunter] Already on raid map ${raidName} (${currentRoomId}) - restoring state and enabling autoplay`);
+                        
+                        // Restore internal state
+                        isCurrentlyRaiding = true;
+                        currentRaidInfo = {
+                            name: raidName,
+                            roomId: currentRoomId,
+                            priority: getRaidPriority(raidName),
+                            expiresAt: raid?.expiresAt || Infinity
+                        };
+                        
+                        // Reclaim quest button control
+                        modifyQuestButtonForRaiding();
+                        
+                        // Enable autoplay if not already enabled
+                        if (!inAutoplay) {
+                            console.log('[Raid Hunter] Enabling autoplay mode for existing raid...');
+                            const autoplayEnabled = ensureAutoplayMode();
+                            if (!autoplayEnabled) {
+                                console.log('[Raid Hunter] Could not enable autoplay - will retry later');
+                                // Don't cancel the raid - just wait for next check
+                            }
+                        }
+                        
+                        return; // Don't process new raids
+                    }
+                }
                 
                 // Update raid state first
                 updateRaidState();
@@ -1677,10 +2046,29 @@ function handleFightToast() {
 // Board Analyzer coordination - pause Raid Hunter monitoring during Board Analyzer runs
 function handleBoardAnalyzerCoordination() {
     try {
-        if (!window.__modCoordination) return;
+        // Use coordination system if available
+        if (window.ModCoordination) {
+            const boardAnalyzerActive = window.ModCoordination.isModActive('Board Analyzer');
+            const manualRunnerActive = window.ModCoordination.isModActive('Manual Runner');
+            
+            if ((boardAnalyzerActive || manualRunnerActive) && !isBoardAnalyzerRunning) {
+                // Board Analyzer or Manual Runner started - pause Raid Hunter monitoring
+                console.log('[Raid Hunter] Coordination active (Board Analyzer or Manual Runner) - pausing monitoring');
+                isBoardAnalyzerRunning = true;
+                pauseRaidHunterMonitoring();
+            } else if (!boardAnalyzerActive && !manualRunnerActive && isBoardAnalyzerRunning) {
+                // Board Analyzer finished - resume Raid Hunter monitoring
+                console.log('[Raid Hunter] Coordination cleared - resuming monitoring');
+                isBoardAnalyzerRunning = false;
+                resumeRaidHunterMonitoring();
+            }
+            return;
+        }
         
-        const boardAnalyzerRunning = window.__modCoordination.boardAnalyzerRunning;
-        const manualRunnerRunning = window.__modCoordination.manualRunnerRunning === true;
+        if (!window.ModCoordination) return;
+        
+        const boardAnalyzerRunning = window.ModCoordination.isModActive('Board Analyzer');
+        const manualRunnerRunning = window.ModCoordination.isModActive('Manual Runner');
         
         if ((boardAnalyzerRunning || manualRunnerRunning) && !isBoardAnalyzerRunning) {
             // Board Analyzer started - pause Raid Hunter monitoring
@@ -1888,9 +2276,11 @@ function updateRaidQueue() {
         
         // Store current queue state for comparison (preserve raids that are being processed)
         const previousQueue = [...raidQueue];
+        const previousQueueRoomIds = new Set(previousQueue.map(r => r.roomId));
         
         // Clear existing queue (will rebuild)
         raidQueue = [];
+        const newlyAddedRaids = [];
         
         if (currentRaidList.length > 0) {
             // Add available raids to queue using API data with priority
@@ -1923,23 +2313,34 @@ function updateRaidQueue() {
                 }
                 
                 const priority = getRaidPriority(raidName);
-                raidQueue.push({
+                const raidEntry = {
                     name: raidName,
                     roomId: raid.roomId,
                     button: null, // No UI button needed for API access
                     priority: priority,
                     isCurrentRaid: false, // Never true since we exclude current raid above
                     expiresAt: raid.expiresAt || Infinity // Add expiration time for tie-breaking
-                });
+                };
+                raidQueue.push(raidEntry);
                 
-                const priorityLabel = getPriorityLabel(priority);
-                console.log(`[Raid Hunter] Added ${raidName} to queue via API (Priority: ${priorityLabel})`);
+                // Track newly added raids (not in previous queue)
+                if (!previousQueueRoomIds.has(raid.roomId)) {
+                    newlyAddedRaids.push({ name: raidName, priority });
+                }
             });
             
             // Sort queue by priority (lower number = higher priority), then by expiration time (least time left first)
             sortRaidQueue();
             
-            // Log queue changes for debugging
+            // Only log newly added raids (not duplicates)
+            if (newlyAddedRaids.length > 0) {
+                newlyAddedRaids.forEach(({ name, priority }) => {
+                    const priorityLabel = getPriorityLabel(priority);
+                    console.log(`[Raid Hunter] Added ${name} to queue via API (Priority: ${priorityLabel})`);
+                });
+            }
+            
+            // Log queue changes for debugging (only when size changes)
             if (previousQueue.length !== raidQueue.length) {
                 console.log(`[Raid Hunter] Queue size changed: ${previousQueue.length} -> ${raidQueue.length}`);
             }
@@ -1985,29 +2386,41 @@ function closeOpenModals() {
 
 // Process next raid in queue (robust implementation inspired by Bestiary Automator)
 function processNextRaid(allowInterrupt = false) {
+    // Prevent duplicate processing
+    if (isProcessingRaid && !allowInterrupt) {
+        return;
+    }
+    
     // CRITICAL: Refresh queue state before processing (like Bestiary Automator does)
     updateRaidState();
     
     if (raidQueue.length === 0) {
         console.log('[Raid Hunter] Queue is empty - nothing to process');
+        isProcessingRaid = false;
         return;
     }
     
     // If currently raiding and not allowing interrupt, don't process
     if (isCurrentlyRaiding && !allowInterrupt) {
         console.log('[Raid Hunter] Already raiding and interrupt not allowed');
+        isProcessingRaid = false;
         return;
     }
+    
+    // Set processing flag
+    isProcessingRaid = true;
     
     // Check if Board Analyzer is running - if so, skip processing
     if (isBoardAnalyzerRunning) {
         console.log('[Raid Hunter] Board Analyzer is running - skipping raid processing');
+        isProcessingRaid = false;
         return;
     }
     
     // Check if automation is still enabled before starting
     if (!isAutomationActive()) {
         console.log('[Raid Hunter] Automation disabled');
+        isProcessingRaid = false;
         return;
     }
     
@@ -2018,12 +2431,14 @@ function processNextRaid(allowInterrupt = false) {
     const nextRaid = raidQueue[0];
     if (!nextRaid) {
         console.log('[Raid Hunter] No valid raid found in queue after sorting');
+        isProcessingRaid = false;
         return;
     }
     
     // CRITICAL: Verify raid still exists in game state before processing (like Bestiary Automator)
     if (!validateRaidExists(nextRaid)) {
         console.log(`[Raid Hunter] Raid ${nextRaid.name} no longer exists in game state - removing from queue and trying next`);
+        isProcessingRaid = false;
         skipInvalidRaidAndRetry('Raid no longer exists', allowInterrupt);
         return;
     }
@@ -2040,6 +2455,7 @@ function processNextRaid(allowInterrupt = false) {
                 processNextRaid();
             }
         }, 10000);
+        isProcessingRaid = false;
         return;
     }
     
@@ -2048,6 +2464,7 @@ function processNextRaid(allowInterrupt = false) {
     const enabledMaps = settings.enabledRaidMaps || [];
     if (!enabledMaps.includes(nextRaid.name)) {
         console.log(`[Raid Hunter] Safety check failed - ${nextRaid.name} is no longer enabled, removing from queue`);
+        isProcessingRaid = false;
         skipInvalidRaidAndRetry('Raid no longer enabled', allowInterrupt);
         return;
     }
@@ -2069,6 +2486,18 @@ function processNextRaid(allowInterrupt = false) {
     isCurrentlyRaiding = true;
     raidRetryCount = 0; // Reset retry count for new raid
     
+    // Update coordination system state
+    if (window.ModCoordination) {
+        window.ModCoordination.updateModState('Raid Hunter', { active: true });
+    }
+    
+    // CRITICAL: If raid is HIGH or MEDIUM priority, stop Manual Runner if it's active
+    if (nextRaid.priority === RAID_PRIORITY.HIGH || nextRaid.priority === RAID_PRIORITY.MEDIUM) {
+        const priorityLabel = getPriorityLabel(nextRaid.priority);
+        console.log(`[Raid Hunter] ${priorityLabel} priority raid starting - checking if Manual Runner needs to be stopped`);
+        stopManualRunnerIfActive();
+    }
+    
     // Don't modify quest button yet - wait until Start button is clicked
     // Quest button will be modified in handleEventOrRaid() after Start button click
     
@@ -2079,6 +2508,7 @@ function processNextRaid(allowInterrupt = false) {
             console.log('[Raid Hunter] Automation disabled during modal close');
             isCurrentlyRaiding = false;
             currentRaidInfo = null;
+            isProcessingRaid = false;
             performRaidCleanup();
             
             // If automation was disabled, try to process remaining queue if automation is re-enabled
@@ -2097,6 +2527,7 @@ function processNextRaid(allowInterrupt = false) {
             console.log(`[Raid Hunter] Raid ${nextRaid.name} expired during processing - checking for next raid`);
             isCurrentlyRaiding = false;
             currentRaidInfo = null;
+            isProcessingRaid = false;
             
             // Try next raid in queue if available
             if (raidQueue.length > 0) {
@@ -2111,10 +2542,13 @@ function processNextRaid(allowInterrupt = false) {
             return;
         }
         
+        // Reset processing flag when actually starting the raid
+        isProcessingRaid = false;
         handleEventOrRaid(nextRaid.roomId);
     }).catch(error => {
         console.error('[Raid Hunter] Error in processNextRaid modal handling:', error);
         // Reset state on error
+        isProcessingRaid = false;
         isCurrentlyRaiding = false;
         currentRaidInfo = null;
         
@@ -2945,6 +3379,11 @@ function toggleAutomation() {
     saveAutomationState(); // Save to localStorage
     updateToggleButton();
     
+    // Update coordination system state
+    if (window.ModCoordination) {
+        window.ModCoordination.updateModState('Raid Hunter', { enabled: isAutomationActive() });
+    }
+    
     if (isAutomationActive()) {
         console.log('[Raid Hunter] Automation enabled');
         
@@ -3085,6 +3524,11 @@ function interruptCurrentRaid(callback) {
     isRaidActive = false;
     raidCountdownEndTime = null;
     
+    // Update coordination system state
+    if (window.ModCoordination) {
+        window.ModCoordination.updateModState('Raid Hunter', { active: false });
+    }
+    
     // Reset quest button state
     stopAutoplayStateMonitoring();
     stopQuestButtonValidation();
@@ -3124,8 +3568,10 @@ async function stopAutoplayOnRaidEnd() {
             const raidFloors = settings.raidFloors || {};
             const floorSetting = raidFloors[raidName];
             
-            if (floorSetting === 'auto') {
+            if (isAutoFloorMode(floorSetting)) {
                 console.log('[Raid Hunter] Auto floor mode active - detecting victory/defeat');
+                
+                const maxFloor = getAutoMaxFloor(floorSetting);
                 
                 // Detect victory/defeat
                 const isVictory = await detectVictoryDefeat();
@@ -3144,7 +3590,7 @@ async function stopAutoplayOnRaidEnd() {
                     // Victory: reset defeat counter
                     autoState.consecutiveDefeats = 0;
                     
-                    if (currentFloor < 10) {
+                    if (currentFloor < maxFloor) {
                         // Advance to next floor
                         const nextFloor = currentFloor + 1;
                         autoState.currentFloor = nextFloor;
@@ -3153,8 +3599,8 @@ async function stopAutoplayOnRaidEnd() {
                             fn: (prev) => ({ ...prev, floor: nextFloor }) 
                         });
                         console.log(`[Raid Hunter] → Floor ${nextFloor}`);
-                    } else if (currentFloor === 10) {
-                        // Victory on floor 10: set floor to 0 and continue farming
+                    } else if (currentFloor === maxFloor) {
+                        // Victory on max floor: set floor to 0 and continue farming
                         autoState.currentFloor = 0;
                         // Update settings to floor 0 (exit auto mode)
                         const updatedSettings = loadSettings();
@@ -3163,7 +3609,7 @@ async function stopAutoplayOnRaidEnd() {
                         }
                         updatedSettings.raidFloors[raidName] = 0;
                         localStorage.setItem('raidHunterSettings', JSON.stringify(updatedSettings));
-                        console.log(`[Raid Hunter] → Floor 0 (victory on floor 10)`);
+                        console.log(`[Raid Hunter] → Floor 0 (victory on floor ${maxFloor})`);
                     }
                 } else {
                     // Defeat: increment consecutive defeat counter
@@ -3561,7 +4007,7 @@ async function handleEventOrRaid(roomId) {
     // Load settings once at the beginning (used throughout the function)
     const settings = loadSettings();
     
-    // Get raid name early (used throughout the function)
+    // Get raid name at function scope so it's accessible throughout the function
     const raidName = getEventNameForRoomId(roomId);
 
     try {
@@ -3590,7 +4036,7 @@ async function handleEventOrRaid(roomId) {
             const floorSetting = raidFloors[raidName] !== undefined ? raidFloors[raidName] : 0;
             let floor;
             
-            if (floorSetting === 'auto') {
+            if (isAutoFloorMode(floorSetting)) {
                 // Auto mode: use tracked auto floor state, defaulting to 1
                 if (!autoFloorState[raidName]) {
                     autoFloorState[raidName] = { currentFloor: 1, consecutiveDefeats: 0 };
@@ -3610,7 +4056,7 @@ async function handleEventOrRaid(roomId) {
         console.log('[Raid Hunter] Navigation completed');
         
         // Set up auto floor game end monitoring BEFORE starting autoplay (so we catch the first game's results)
-        if (raidName && settings.raidFloors && settings.raidFloors[raidName] === 'auto') {
+        if (raidName && settings.raidFloors && isAutoFloorMode(settings.raidFloors[raidName])) {
             console.log('[Raid Hunter] Setting up auto floor monitoring early (before autoplay starts)');
             setupAutoFloorGameEndMonitoring();
         }
@@ -3630,8 +4076,8 @@ async function handleEventOrRaid(roomId) {
         return;
     }
     
-    // Get user's selected setup method (settings already loaded above)
-    const setupMethod = settings.setupMethod || 'Auto-setup';
+    // Get user's selected setup method (per-raid or global)
+    const setupMethod = getRaidSetupMethod(raidName);
     
     // Find and click the appropriate setup button
     console.log(`[Raid Hunter] Looking for ${setupMethod} button...`);
@@ -3654,7 +4100,11 @@ async function handleEventOrRaid(roomId) {
 
     // Enable autoplay mode
     console.log('[Raid Hunter] Enabling autoplay mode...');
-    ensureAutoplayMode();
+    const autoplayEnabled = ensureAutoplayMode();
+    if (!autoplayEnabled) {
+        cancelCurrentRaid('autoplay mode could not be enabled (blocked by Stamina Optimizer or other mod)');
+        return;
+    }
     await new Promise(resolve => setTimeout(resolve, AUTOPLAY_SETUP_DELAY));
     
     // Check automation status after enabling autoplay
@@ -3690,9 +4140,10 @@ async function handleEventOrRaid(roomId) {
         console.error('[Raid Hunter] Error calculating sleep duration:', error);
     }
 
-    // Enable Bestiary Automator's autorefill stamina if Raid Hunter setting is enabled
-    if (settings.autoRefillStamina) {
-        console.log('[Raid Hunter] Auto-refill stamina enabled - enabling Bestiary Automator autorefill...');
+    // Enable Bestiary Automator's autorefill stamina if per-raid or global setting is enabled
+    const autoRefillStamina = getRaidAutoRefillStamina(raidName);
+    if (autoRefillStamina) {
+        console.log(`[Raid Hunter] Auto-refill stamina enabled for ${raidName} - enabling Bestiary Automator autorefill...`);
         // Add a small delay to ensure Bestiary Automator is fully initialized in Chrome
         setTimeout(() => {
             const success = enableBestiaryAutomatorStaminaRefill();
@@ -3736,137 +4187,10 @@ async function handleEventOrRaid(roomId) {
         console.log(`[Raid Hunter] Insufficient stamina (needs ${staminaCheck.cost}) - starting monitoring`);
         
         // Start stamina recovery monitoring (tooltip + API for progress) with continuous monitoring
-        const continuousStaminaMonitoring = () => {
-            console.log('[Raid Hunter] Stamina recovered - clicking Start button');
-            
-            // Check if still valid to continue
-            if (!isAutomationActive() || !isCurrentlyRaiding) {
-                console.log('[Raid Hunter] Raid cancelled during stamina wait');
-                stopStaminaTooltipMonitoring();
-                return;
-            }
-            
-            // Check if user is still on correct raid map
-            if (!isOnCorrectRaidMap()) {
-                console.log('[Raid Hunter] User changed map - stopping stamina monitoring');
-                stopStaminaTooltipMonitoring();
-                handleRaidFailure('User changed map during stamina wait');
-                return;
-            }
-            
-            // Check if autoplay session is actually running (not just mode enabled)
-            const boardContext = globalThis.state.board.getSnapshot().context;
-            const isAutoplayMode = boardContext.mode === 'autoplay';
-            const isAutoplaySessionRunning = boardContext.isRunning || boardContext.autoplayRunning;
-            
-            if (isAutoplayMode && isAutoplaySessionRunning) {
-                // Autoplay session is actually running - just continue monitoring
-                console.log('[Raid Hunter] Autoplay session running - continuing stamina monitoring');
-                startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-            } else {
-                // Autoplay session is not running - need to restart it
-                console.log('[Raid Hunter] Autoplay session not running - attempting to restart');
-                
-                // Try to find and click Start button with retries
-                const tryRestartAutoplay = async () => {
-                    let startButton = null;
-                    let attempts = 0;
-                    const maxAttempts = 5;
-                    
-                    while (attempts < maxAttempts && !startButton) {
-                        attempts++;
-                        console.log(`[Raid Hunter] Looking for Start button (attempt ${attempts}/${maxAttempts})...`);
-                        
-                        startButton = findButtonByText('Start');
-                        
-                        if (!startButton) {
-                            // Wait a bit and check if autoplay started automatically
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                            
-                            const currentBoardContext = globalThis.state.board.getSnapshot().context;
-                            const isNowRunning = currentBoardContext.isRunning || currentBoardContext.autoplayRunning;
-                            
-                            if (isNowRunning) {
-                                console.log('[Raid Hunter] Autoplay started automatically - continuing monitoring');
-                                startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-                                return; // Success
-                            }
-                        } else {
-                            break; // Found button
-                        }
-                    }
-                    
-                    if (!startButton) {
-                        console.log('[Raid Hunter] Start button not found after all attempts');
-                        handleRaidFailure('Start button not found after stamina recovery');
-                        return;
-                    }
-                    
-                    console.log('[Raid Hunter] Clicking Start button after stamina recovery...');
-                    startButton.click();
-                    
-                    // Set up stamina depletion monitoring for the new autoplay session
-                    const handleStaminaDepletion = () => {
-                        const continuousStaminaMonitoring = () => {
-                            console.log('[Raid Hunter] Stamina recovered - checking autoplay state');
-                            
-                            // Check if still valid to continue
-                            if (!isAutomationActive() || !isCurrentlyRaiding) {
-                                console.log('[Raid Hunter] Raid no longer active during stamina recovery');
-                                stopStaminaTooltipMonitoring();
-                                return;
-                            }
-                            
-                            // Check if user is still on correct raid map
-                            if (!isOnCorrectRaidMap()) {
-                                console.log('[Raid Hunter] User changed map - stopping stamina monitoring');
-                                stopStaminaTooltipMonitoring();
-                                return;
-                            }
-                            
-                            // Check if autoplay session is actually running (not just mode enabled)
-                            const boardContext = globalThis.state.board.getSnapshot().context;
-                            const isAutoplayMode = boardContext.mode === 'autoplay';
-                            const isAutoplaySessionRunning = boardContext.isRunning || boardContext.autoplayRunning;
-                            
-                            if (isAutoplayMode && isAutoplaySessionRunning) {
-                                // Autoplay session is actually running - just continue monitoring
-                                console.log('[Raid Hunter] Autoplay session running - continuing stamina monitoring');
-                                startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-                            } else {
-                                // User changed mode (manual or sandbox) - respect their choice and stop monitoring
-                                console.log(`[Raid Hunter] Mode changed to ${boardContext.mode} - stopping stamina monitoring`);
-                                stopStaminaTooltipMonitoring();
-                                cancelCurrentRaid('User changed mode during stamina wait');
-                            }
-                        };
-                        
-                        startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-                    };
-                    
-                    // Watch for stamina depletion during autoplay
-                    const watchStaminaDepletion = () => {
-                        const depletionCheckInterval = setInterval(() => {
-                            const currentCheck = hasInsufficientStamina();
-                            if (currentCheck.insufficient) {
-                                console.log('[Raid Hunter] Stamina depleted during autoplay - starting recovery monitoring');
-                                clearInterval(depletionCheckInterval);
-                                handleStaminaDepletion();
-                            }
-                        }, 5000); // Check every 5 seconds
-                        
-                        // Store for cleanup
-                        window.raidHunterDepletionInterval = depletionCheckInterval;
-                    };
-                    
-                    watchStaminaDepletion();
-                    
-                    console.log('[Raid Hunter] Autoplay started after stamina recovery');
-                };
-                
-                tryRestartAutoplay();
-            }
-        };
+        const continuousStaminaMonitoring = createStaminaMonitoringCallback(
+            'Stamina recovered - clicking Start button',
+            'Raid started successfully after stamina recovery'
+        );
         
         startStaminaTooltipMonitoring(continuousStaminaMonitoring, staminaCheck.cost); // Pass required stamina
         
@@ -3881,18 +4205,37 @@ async function handleEventOrRaid(roomId) {
         return;
     }
 
-    // Find and click Start button
+    // Find and click Start button with retry logic (especially needed after interrupts)
     console.log('[Raid Hunter] Looking for Start button...');
     const startButton = findButtonByText('Start');
     if (!startButton) {
-        console.log('[Raid Hunter] Start button not found');
-        handleRaidFailure('Start button not found');
-        return;
+        console.log('[Raid Hunter] Start button not found - retrying with delay (page may still be loading after interrupt)...');
+        
+        // Retry logic for Start button (especially needed after interrupts)
+        const tryFindStartButton = async (retries = 5, delay = 500) => {
+            const button = findButtonByText('Start');
+            if (button) {
+                console.log('[Raid Hunter] Start button found on retry - clicking...');
+                button.click();
+                return;
+            } else if (retries > 0) {
+                console.log(`[Raid Hunter] Start button not found - retrying in ${delay}ms (${retries} retries left)`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return tryFindStartButton(retries - 1, delay);
+            } else {
+                console.log('[Raid Hunter] Start button not found after all retries');
+                handleRaidFailure('Start button not found');
+                return;
+            }
+        };
+        
+        await tryFindStartButton();
+        await new Promise(resolve => setTimeout(resolve, AUTOMATION_CHECK_DELAY));
+    } else {
+        console.log('[Raid Hunter] Clicking Start button...');
+        startButton.click();
+        await new Promise(resolve => setTimeout(resolve, AUTOMATION_CHECK_DELAY));
     }
-    
-    console.log('[Raid Hunter] Clicking Start button...');
-    startButton.click();
-    await new Promise(resolve => setTimeout(resolve, AUTOMATION_CHECK_DELAY));
     
     // Final check after clicking Start button
     if (!isAutomationActive()) {
@@ -3908,7 +4251,7 @@ async function handleEventOrRaid(roomId) {
     
     // Auto floor game end monitoring should already be set up (done earlier after navigation)
     // But set it up again here if it wasn't set up earlier (fallback)
-    if (raidName && settings.raidFloors && settings.raidFloors[raidName] === 'auto') {
+    if (raidName && settings.raidFloors && isAutoFloorMode(settings.raidFloors[raidName])) {
         if (!autoFloorBoardSubscription) {
             console.log('[Raid Hunter] Auto floor monitoring not set up earlier - setting up now');
             setupAutoFloorGameEndMonitoring();
@@ -3937,48 +4280,70 @@ async function handleEventOrRaid(roomId) {
         const boardContext = globalThis.state.board.getSnapshot().context;
         const isAutoplayMode = boardContext.mode === 'autoplay';
         const isAutoplaySessionRunning = boardContext.isRunning || boardContext.autoplayRunning;
+        const isGameInProgress = boardContext.gameStarted; // Check if battle is ongoing
         
-        if (isAutoplayMode && isAutoplaySessionRunning) {
-            // Autoplay session is actually running - just continue monitoring
-            console.log('[Raid Hunter] Autoplay session running - continuing stamina monitoring');
-            startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-        } else {
-            // Autoplay session is not running - need to restart it
-            console.log('[Raid Hunter] Autoplay session not running - attempting to restart');
-            
-            // Try to find and click Start button with retries
-            let startButton = null;
-            let attempts = 0;
-            const maxAttempts = 5;
-            
-            const tryFindStartButton = async () => {
-                while (attempts < maxAttempts && !startButton) {
-                    attempts++;
-                    console.log(`[Raid Hunter] Looking for Start button (attempt ${attempts}/${maxAttempts})...`);
-                    
-                    startButton = findButtonByText('Start');
-                    
-                    if (!startButton) {
-                        // Wait a bit and check if autoplay started automatically
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                        
-                        const currentBoardContext = globalThis.state.board.getSnapshot().context;
-                        const isNowRunning = currentBoardContext.isRunning || currentBoardContext.autoplayRunning;
-                        
-                        if (isNowRunning) {
-                            console.log('[Raid Hunter] Autoplay started automatically - continuing monitoring');
-                            startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-                            return true; // Success
-                        }
-                    } else {
-                        break; // Found button
-                    }
+        if ((isAutoplayMode && isAutoplaySessionRunning) || isGameInProgress) {
+            // Autoplay session is running OR battle is in progress - check if we need to monitor stamina
+            const staminaCheck = hasInsufficientStamina();
+            if (staminaCheck.insufficient) {
+                // Stamina is actually depleted - restart recovery monitoring
+                console.log('[Raid Hunter] Autoplay running but stamina depleted - restarting stamina recovery monitoring');
+                startStaminaTooltipMonitoring(continuousStaminaMonitoring);
+            } else {
+                // Stamina is sufficient and autoplay is running - monitor for depletion instead
+                console.log('[Raid Hunter] Autoplay running with sufficient stamina - monitoring for depletion');
+                // Clear any existing depletion interval
+                if (window.raidHunterDepletionInterval) {
+                    clearInterval(window.raidHunterDepletionInterval);
                 }
-                
+                // Set up depletion watcher
+                const watchStaminaDepletion = () => {
+                    const depletionCheckInterval = setInterval(() => {
+                        if (!isAutomationActive() || !isCurrentlyRaiding) {
+                            clearInterval(depletionCheckInterval);
+                            window.raidHunterDepletionInterval = null;
+                            return;
+                        }
+                        const currentCheck = hasInsufficientStamina();
+                        if (currentCheck.insufficient) {
+                            console.log('[Raid Hunter] Stamina depleted during autoplay - starting recovery monitoring');
+                            clearInterval(depletionCheckInterval);
+                            window.raidHunterDepletionInterval = null;
+                            startStaminaTooltipMonitoring(continuousStaminaMonitoring);
+                        }
+                    }, STAMINA_MONITOR_INTERVAL);
+                    window.raidHunterDepletionInterval = depletionCheckInterval;
+                };
+                watchStaminaDepletion();
+            }
+        } else {
+            // Autoplay session is not running and no battle in progress - need to click Start button
+            console.log('[Raid Hunter] Autoplay session not running - clicking Start button');
+            
+            // Wait if page is transitioning (visibility change in progress)
+            if (isPageVisibilityTransitioning) {
+                console.log('[Raid Hunter] Page visibility transition in progress - waiting before clicking Start');
+                setTimeout(() => {
+                    // Retry the callback after transition completes
+                    continuousStaminaMonitoring();
+                }, 2500); // Wait slightly longer than transition flag
+                return;
+            }
+            
+            // Find and click Start button with retry logic
+            const tryClickStart = (retries = 3, delay = 500) => {
+                const startButton = findButtonByText('Start');
                 if (!startButton) {
-                    console.log('[Raid Hunter] Start button not found after all attempts');
-                    cancelCurrentRaid('Start button not found after stamina recovery');
-                    return false;
+                    if (retries > 0) {
+                        console.log(`[Raid Hunter] Start button not found - retrying in ${delay}ms (${retries} retries left)`);
+                        setTimeout(() => tryClickStart(retries - 1, delay), delay);
+                    } else {
+                        console.log('[Raid Hunter] Start button not found after stamina recovery (all retries exhausted)');
+                        // Don't cancel raid - just restart monitoring in case button appears later
+                        startStaminaTooltipMonitoring(continuousStaminaMonitoring);
+                        return;
+                    }
+                    return;
                 }
                 
                 console.log('[Raid Hunter] Clicking Start button after stamina recovery...');
@@ -3986,10 +4351,9 @@ async function handleEventOrRaid(roomId) {
                 
                 // Continue monitoring for stamina depletion
                 startStaminaTooltipMonitoring(continuousStaminaMonitoring);
-                return true;
             };
             
-            tryFindStartButton();
+            tryClickStart();
         }
     };
     
@@ -4042,7 +4406,8 @@ function startRaidSleepTimer(roomId) {
                     `${sleepHours}h ${remainingMinutes}m` : 
                     `${remainingMinutes}m`;
                 
-                console.log(`[Raid Hunter] Starting sleep timer for ${timeString} until raid expires`);
+                const raidName = getEventNameForRoomId(roomId) || 'Unknown Raid';
+                console.log(`[Raid Hunter] Starting sleep timer for ${timeString} until raid expires (${raidName})`);
                 console.log(`[Raid Hunter] Stopping interfering monitoring (keeping autoplay monitoring for map switch detection)`);
                 
                 // Stop interfering monitoring (but keep autoplay state monitoring for map switch detection)
@@ -4067,6 +4432,12 @@ function startRaidSleepTimer(roomId) {
                     console.log(`[Raid Hunter] Raid sleep timer expired - checking for new raids`);
                     isCurrentlyRaiding = false;
                     currentRaidInfo = null;
+                    
+                    // Update coordination system state
+                    if (window.ModCoordination) {
+                        window.ModCoordination.updateModState('Raid Hunter', { active: false });
+                    }
+                    
                     updateRaidState();
                     checkForExistingRaids();
                 }, sleepDuration);
@@ -4200,18 +4571,13 @@ function ensureAutoplayMode() {
     }
     
     if (currentOwner && currentOwner !== 'Raid Hunter') {
-        // HIGH and MEDIUM priority raids take control from anyone (including Stamina Optimizer)
+        // HIGH and MEDIUM priority raids take control from anyone
         if (isHighPriorityRaid || isMediumPriorityRaid) {
             const priorityLabel = isHighPriorityRaid ? 'HIGH' : 'MEDIUM';
             console.log(`[Raid Hunter] Taking autoplay control from ${currentOwner} for ${priorityLabel} priority raid`);
             window.AutoplayManager.currentOwner = 'Raid Hunter';
-            
-            // If taking control from Stamina Optimizer, log it clearly
-            if (currentOwner === 'Stamina Optimizer') {
-                console.log(`[Raid Hunter] 🚨 Interrupting Stamina Optimizer for ${priorityLabel} priority raid`);
-            }
         } 
-        // Low priority raids take control from Better Boosted Maps, Stamina Optimizer and others (but not Better Tasker)
+        // Low priority raids take control from Stamina Optimizer, Better Boosted Maps, and others (but not Better Tasker)
         else if (isLowPriorityRaid && currentOwner !== 'Better Tasker') {
             console.log(`[Raid Hunter] Taking autoplay control from ${currentOwner} for low priority raid`);
             window.AutoplayManager.currentOwner = 'Raid Hunter';
@@ -4223,44 +4589,61 @@ function ensureAutoplayMode() {
         }
     }
     
-    return withControl(window.AutoplayManager, 'Raid Hunter', () => {
-        const boardContext = globalThis.state.board.getSnapshot().context;
-        const currentMode = boardContext.mode;
-        
-        if (currentMode !== 'autoplay') {
-            const priorityLabel = getPriorityLabel(isHighPriorityRaid ? RAID_PRIORITY.HIGH : RAID_PRIORITY.MEDIUM);
-            globalThis.state.board.send({ type: "setPlayMode", mode: "autoplay" });
-            console.log(`[Raid Hunter] Switched to autoplay mode (${priorityLabel} priority raid)`);
-            return true;
+    
+    // Special handling for LOW priority raids taking control from Stamina Optimizer
+    if (isLowPriorityRaid && currentOwner === 'Stamina Optimizer') {
+        // Use ModCoordination to force take control from Stamina Optimizer for raid processing
+        if (window.ModCoordination) {
+            const controlGranted = window.ModCoordination.requestControl('autoplay', 'Raid Hunter', { force: true });
+            if (controlGranted) {
+                console.log('[Raid Hunter] Force took autoplay control from Stamina Optimizer for LOW priority raid');
+            } else {
+                console.log('[Raid Hunter] Failed to take autoplay control from Stamina Optimizer');
+                return false;
+            }
         }
+    }
+
+    // Request control and keep it (don't use withControl which releases immediately)
+    // If we already set currentOwner above, requestControl should succeed or already be ours
+    if (!window.AutoplayManager.requestControl('Raid Hunter')) {
+        console.log('[Raid Hunter] Cannot enable autoplay mode - controlled by another mod');
         return false;
-    }, 'switch to autoplay mode for raid');
+    }
+    
+    const boardContext = globalThis.state.board.getSnapshot().context;
+    const currentMode = boardContext.mode;
+
+    if (currentMode !== 'autoplay') {
+        const priorityLabel = getPriorityLabel(isHighPriorityRaid ? RAID_PRIORITY.HIGH : isMediumPriorityRaid ? RAID_PRIORITY.MEDIUM : RAID_PRIORITY.LOW);
+        globalThis.state.board.send({ type: "setPlayMode", mode: "autoplay" });
+        console.log(`[Raid Hunter] Switched to autoplay mode (${priorityLabel} priority raid)`);
+        return true;
+    }
+    
+    // Already in autoplay mode, but we still have control now
+    return true;
 }
 
 // Checks for existing raids.
 async function checkForExistingRaids() {
+    // Prevent duplicate calls
+    if (isCheckingExistingRaids) {
+        return;
+    }
+    
     try {
+        isCheckingExistingRaids = true;
+        
         // Check if automation is enabled
         if (!isAutomationActive()) {
             console.log('[Raid Hunter] Automation is disabled - skipping existing raid check');
             return;
         }
         
-        // Skip if already processing raids (prevents duplicate processing from retries)
-        if (isCurrentlyRaiding || raidQueue.length > 0) {
-            console.log('[Raid Hunter] Already processing raids - skipping duplicate check');
-            return;
-        }
-        
-        // Check if game state is ready
-        if (!globalThis.state?.raids?.getSnapshot) {
-            console.log('[Raid Hunter] Game state not ready yet - skipping raid check');
-            return;
-        }
-        
         // First check if there are any raids available in the raid state
         const raidState = globalThis.state.raids.getSnapshot();
-        const currentRaidList = raidState.context?.list || [];
+        const currentRaidList = raidState.context.list || [];
         
         if (currentRaidList.length === 0) {
             console.log('[Raid Hunter] No raids currently available');
@@ -4269,12 +4652,6 @@ async function checkForExistingRaids() {
         
         console.log('[Raid Hunter] Found existing raids:', currentRaidList.length);
         console.log('[Raid Hunter] Active raid details:', currentRaidList);
-        
-        // Check if board state is ready
-        if (!globalThis.state?.board?.getSnapshot) {
-            console.log('[Raid Hunter] Board state not ready yet - will retry later');
-            return;
-        }
         
         // Check if we're already in autoplay mode and on a raid map
         const boardContext = globalThis.state.board.getSnapshot().context;
@@ -4351,13 +4728,19 @@ async function checkForExistingRaids() {
             if (raidStartDelay > 0) {
                 console.log(`[Raid Hunter] Applying raid start delay: ${raidStartDelay} seconds`);
                 
-            setTimeout(() => {
-                // Check if raid processing can proceed
-                if (canProcessRaid('existing raid delay') && raidQueue.length > 0) {
-                    console.log('[Raid Hunter] Raid start delay completed - processing raid (raid priority)');
-                    processNextRaid();
+                // Clear any existing timeout to prevent duplicates
+                if (raidProcessingTimeout) {
+                    clearTimeout(raidProcessingTimeout);
                 }
-            }, raidStartDelay * 1000);
+                
+                raidProcessingTimeout = setTimeout(() => {
+                    raidProcessingTimeout = null;
+                    // Check if raid processing can proceed
+                    if (canProcessRaid('existing raid delay') && raidQueue.length > 0 && !isProcessingRaid) {
+                        console.log('[Raid Hunter] Raid start delay completed - processing raid (raid priority)');
+                        processNextRaid();
+                    }
+                }, raidStartDelay * 1000);
             } else {
                 // No delay, process immediately
                 processNextRaid();
@@ -4383,8 +4766,6 @@ function setupBoardAnalyzerCoordination() {
     boardAnalyzerCoordinationInterval = setInterval(() => {
         handleBoardAnalyzerCoordination();
     }, 2000);
-    
-    console.log('[Raid Hunter] Board Analyzer coordination set up');
 }
 
 // Sets up raid monitoring.
@@ -4396,7 +4777,6 @@ function setupRaidMonitoring() {
 
     if (globalThis.state && globalThis.state.raids) {
         raidUnsubscribe = globalThis.state.raids.on("newRaid", (e) => {
-            console.log('[Raid Hunter] 🆕 New raid event detected:', e.raid);
             resetRaidCountdown();
             handleNewRaid(e.raid);
         });
@@ -4406,8 +4786,6 @@ function setupRaidMonitoring() {
         
         // Start periodic raid end checking
         startRaidEndChecking();
-        
-        console.log('[Raid Hunter] ✅ Raid event listener set up successfully');
     }
     
     // Fight toast monitoring is set up in init() and runs independently
@@ -4422,117 +4800,58 @@ function setupFightToastMonitoring() {
 
 // Handles new raid detection.
 async function handleNewRaid(raid) {
-    console.log('[Raid Hunter] 📥 handleNewRaid called for raid:', raid);
-    
     // Check if automation is enabled
     if (!isAutomationActive()) {
-        console.log('[Raid Hunter] ⏸️ New raid detected but automation is disabled');
+        console.log('[Raid Hunter] New raid detected but automation is disabled');
         return;
     }
     
-    // Rate limit modal closing, but NOT raid processing
-    // This prevents spam but ensures we don't miss important raids
     const currentTime = Date.now();
-    const timeSinceLastRaid = currentTime - lastRaidTime;
-    const shouldCloseModals = timeSinceLastRaid >= 5000; // 5 seconds
-    
-    console.log(`[Raid Hunter] Time since last raid: ${timeSinceLastRaid}ms, will close modals: ${shouldCloseModals}`);
-    
-    if (shouldCloseModals) {
-        lastRaidTime = currentTime;
+    if (currentTime - lastRaidTime < 30000) {
+        return;
     }
+    
+    lastRaidTime = currentTime;
     
     try {
         const settings = loadSettings();
         const enabledMaps = settings.enabledRaidMaps || []; // Default to none if not set
         
-        // Only close modals if enough time has passed (rate limiting)
-        if (shouldCloseModals) {
-            let modalsClosed = 0;
-            while (true) {
-                const closeButton = findButtonByText('Close');
-                if (closeButton) {
-                    closeButton.click();
-                    modalsClosed++;
-                    await new Promise(resolve => setTimeout(resolve, BESTIARY_RETRY_DELAY));
-                } else {
-                    break;
-                }
-            }
-            if (modalsClosed > 0) {
-                console.log(`[Raid Hunter] Closed ${modalsClosed} modal(s)`);
+        while (true) {
+            const closeButton = findButtonByText('Close');
+            if (closeButton) {
+                closeButton.click();
+                await new Promise(resolve => setTimeout(resolve, BESTIARY_RETRY_DELAY));
+            } else {
+                break;
             }
         }
         
         // Update raid queue and process next raid
-        console.log('[Raid Hunter] Updating raid state and queue...');
         updateRaidState();
-        
         if (raidQueue.length > 0) {
-            // Sort queue to get highest priority raid
-            sortRaidQueue();
-            const nextRaid = raidQueue[0];
-            const queueInfo = raidQueue.map(r => `${r.name} (${getPriorityLabel(r.priority)})`).join(', ');
-            console.log(`[Raid Hunter] ✅ ${raidQueue.length} raid(s) in queue: ${queueInfo}`);
+            console.log(`[Raid Hunter] New raids detected - processing next raid (raid priority)`);
             
-            // CRITICAL: For HIGH/MEDIUM priority raids, skip delay and interrupt immediately
-            if (nextRaid.priority === RAID_PRIORITY.HIGH || nextRaid.priority === RAID_PRIORITY.MEDIUM) {
-                const priorityLabel = getPriorityLabel(nextRaid.priority);
-                console.log(`[Raid Hunter] 🚨 ${priorityLabel} priority raid detected: ${nextRaid.name} - processing IMMEDIATELY`);
-                
-                // If currently raiding a lower priority raid, interrupt it
-                if (isCurrentlyRaiding && currentRaidInfo && nextRaid.priority < currentRaidInfo.priority) {
-                    console.log(`[Raid Hunter] Interrupting current raid ${currentRaidInfo.name} for ${priorityLabel} priority raid`);
-                    interruptCurrentRaid(() => {
-                        processNextRaid(true); // Allow interrupt
-                    });
-                    return;
-                }
-                
-                // If Stamina Optimizer or Better Boosted Maps has control, take it
-                const currentOwner = window.AutoplayManager?.getCurrentOwner?.();
-                if (currentOwner === 'Stamina Optimizer' || currentOwner === 'Better Boosted Maps') {
-                    console.log(`[Raid Hunter] Taking control from ${currentOwner} for ${priorityLabel} priority raid`);
-                    // The ensureAutoplayMode() function will handle taking control
-                }
-                
-                // Process immediately without delay
-                processNextRaid(true); // Allow interrupt
-                return;
-            }
-            
-            // For LOW priority raids, apply delay and normal processing
+            // Apply raid start delay if configured
             const raidStartDelay = settings.raidDelay || DEFAULT_RAID_START_DELAY;
             
-            // Check if raid can proceed based on priority (LOW priority yields to Better Tasker)
-            if (!canProcessRaidWithPriority(nextRaid.priority, 'new raid processing')) {
-                const priorityLabel = getPriorityLabel(nextRaid.priority);
-                console.log(`[Raid Hunter] ${priorityLabel} priority raid waiting for higher priority activities...`);
-                return;
-            }
-            
             if (raidStartDelay > 0) {
-                console.log(`[Raid Hunter] ⏱️ Applying raid start delay: ${raidStartDelay} seconds`);
+                console.log(`[Raid Hunter] Applying raid start delay: ${raidStartDelay} seconds`);
                 
                 setTimeout(() => {
-                    // Re-check if raid can proceed after delay
-                    if (canProcessRaidWithPriority(nextRaid.priority, 'new raid delay') && raidQueue.length > 0) {
-                        console.log('[Raid Hunter] ✅ Raid start delay completed - processing raid');
+                    // Check if raid processing can proceed
+                    if (canProcessRaid('new raid delay') && raidQueue.length > 0) {
+                        console.log('[Raid Hunter] Raid start delay completed - processing raid (raid priority)');
                         processNextRaid();
-                    } else {
-                        console.log('[Raid Hunter] ❌ Cannot process raid after delay (blocked or queue empty)');
                     }
                 }, raidStartDelay * 1000);
             } else {
                 // No delay, process immediately
-                console.log('[Raid Hunter] ⚡ No delay configured - processing immediately');
                 processNextRaid();
             }
-        } else {
-            console.log('[Raid Hunter] ℹ️ No raids added to queue (likely not enabled or already in queue)');
         }
     } catch (error) {
-        console.error("[Raid Hunter] ❌ Error handling raid:", error);
+        console.error("[Raid Hunter] Error handling raid:", error);
     }
 }
 
@@ -5148,8 +5467,8 @@ function createRaidMapSelection() {
                             'rook': 'Rookgaard',
                             'carlin': 'Carlin',
                             'folda': 'Folda',
-                            'ab': 'Ab\'Dendriel',
-                            'kaz': 'Kazordoon',
+                            'abdendriel': 'Ab\'Dendriel',
+                            'kazordoon': 'Kazordoon',
                             'venore': 'Venore'
                         };
                         return regionNameMap[region.id] || region.id;
@@ -5162,21 +5481,58 @@ function createRaidMapSelection() {
         return null;
     }
     
-    // Dynamically add active raids to their correct regions using game state API
+    // Enhanced: Add ALL raid maps from game state that aren't already in EVENT_TEXTS
+    // This ensures all raid maps are visible, with Event badges for non-core raids
     try {
         const knownStatic = new Set(Object.values(raidGroups).flat());
+        const regions = globalThis.state?.utils?.REGIONS;
+
+        if (regions && Array.isArray(regions)) {
+            for (const region of regions) {
+                if (region.rooms && Array.isArray(region.rooms)) {
+                    const regionName = (() => {
+                        const regionNameMap = {
+                            'rook': 'Rookgaard',
+                            'carlin': 'Carlin',
+                            'folda': 'Folda',
+                            'abdendriel': 'Ab\'Dendriel',
+                            'kazordoon': 'Kazordoon',
+                            'venore': 'Venore'
+                        };
+                        return regionNameMap[region.id] || region.id;
+                    })();
+
+                    // Initialize region if it doesn't exist
+                    if (!raidGroups[regionName]) {
+                        raidGroups[regionName] = [];
+                    }
+
+                    // Add all raid maps from this region that aren't already in EVENT_TEXTS
+                    for (const room of region.rooms) {
+                        if (room.raid === true) {
+                            const raidName = getEventNameForRoomId(room.id);
+                            if (raidName && !raidName.startsWith('Unknown') && !raidGroups[regionName].includes(raidName)) {
+                                raidGroups[regionName].push(raidName);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also add any currently active raids (fallback for edge cases)
         const raidState = globalThis.state?.raids?.getSnapshot?.();
         const list = raidState?.context?.list || [];
-        
+
         for (const raid of list) {
             const raidName = getEventNameForRoomId(raid.roomId);
             if (!raidName || raidName.startsWith('Unknown') || knownStatic.has(raidName)) {
                 continue; // Skip already added or invalid raids
             }
-            
+
             // Get the region for this raid
             const regionName = getRegionNameForRoomId(raid.roomId);
-            
+
             if (regionName && raidGroups[regionName]) {
                 // Add to the correct region
                 if (!raidGroups[regionName].includes(raidName)) {
@@ -5193,7 +5549,7 @@ function createRaidMapSelection() {
             }
         }
     } catch (error) {
-        console.error('[Raid Hunter] Error populating dynamic raids:', error);
+        console.error('[Raid Hunter] Error populating all raid maps:', error);
     }
 
     // Create checkboxes for each raid group
@@ -5255,8 +5611,22 @@ function createRaidMapSelection() {
             raidDiv.appendChild(checkbox);
             raidDiv.appendChild(label);
             
-            // Add "Event" badge for temporary event raids
-            if (TEMPORARY_EVENT_RAIDS.includes(raidName)) {
+            // Add right-click context menu for per-raid settings
+            raidDiv.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                createRaidContextMenu(raidName, e.clientX, e.clientY, () => {
+                    // Refresh custom settings indicator after menu closes
+                    updateRaidCustomSettingsIndicator(raidDiv, raidName);
+                });
+            });
+            
+            // Add custom settings indicator if raid has custom settings
+            updateRaidCustomSettingsIndicator(raidDiv, raidName);
+            
+            // Add "Event" badge only for raids NOT in the hardcoded EVENT_TEXTS list
+            // These are truly dynamic events that are not statically defined
+            if (!EVENT_TEXTS.includes(raidName)) {
                 const eventBadge = document.createElement('span');
                 eventBadge.textContent = t('mods.raidHunter.event');
                 eventBadge.className = 'pixel-font-16';
@@ -5338,19 +5708,25 @@ function createRaidMapSelection() {
                 color: rgb(255, 217, 61);
                 border: 1px solid rgb(255, 217, 61);
             `;
-            // Create options for floors 0-15 and "auto"
+            // Create options for floors 0-15 and auto modes
             for (let i = 0; i <= 15; i++) {
                 const opt = document.createElement('option');
                 opt.value = i.toString();
                 opt.textContent = `${t('mods.raidHunter.floor')} ${i}`;
                 floorSelect.appendChild(opt);
             }
-            // Add "auto" option
-            const autoOpt = document.createElement('option');
-            autoOpt.value = 'auto';
-            autoOpt.textContent = 'Auto';
-            autoOpt.title = t('mods.raidHunter.autoFloorTooltip');
-            floorSelect.appendChild(autoOpt);
+            // Add "Auto-10" option
+            const auto10Opt = document.createElement('option');
+            auto10Opt.value = 'auto-10';
+            auto10Opt.textContent = 'Auto-10';
+            auto10Opt.title = t('mods.raidHunter.autoFloorTooltip');
+            floorSelect.appendChild(auto10Opt);
+            // Add "Auto-15" option
+            const auto15Opt = document.createElement('option');
+            auto15Opt.value = 'auto-15';
+            auto15Opt.textContent = 'Auto-15';
+            auto15Opt.title = t('mods.raidHunter.autoFloorTooltip');
+            floorSelect.appendChild(auto15Opt);
             
             // Set initial value from settings (default: 0)
             const raidFloors = settings.raidFloors || {};
@@ -5359,7 +5735,7 @@ function createRaidMapSelection() {
             
             // Update tooltip based on selected value
             const updateTooltip = () => {
-                if (floorSelect.value === 'auto') {
+                if (isAutoFloorMode(floorSelect.value)) {
                     floorSelect.title = t('mods.raidHunter.autoFloorTooltip');
                 } else {
                     floorSelect.title = '';
@@ -5371,13 +5747,13 @@ function createRaidMapSelection() {
                 const raidName = floorSelect.getAttribute('data-raid-name');
                 // Update tooltip
                 updateTooltip();
-                // If switching away from "auto", clear the auto floor state
-                if (raidName && floorSelect.value !== 'auto' && autoFloorState[raidName]) {
+                // If switching away from auto mode, clear the auto floor state
+                if (raidName && !isAutoFloorMode(floorSelect.value) && autoFloorState[raidName]) {
                     delete autoFloorState[raidName];
                     console.log(`[Raid Hunter] Cleared auto floor state for ${raidName} (switched to floor ${floorSelect.value})`);
                 }
-                // If switching to "auto", initialize the state
-                if (raidName && floorSelect.value === 'auto' && !autoFloorState[raidName]) {
+                // If switching to auto mode, initialize the state
+                if (raidName && isAutoFloorMode(floorSelect.value) && !autoFloorState[raidName]) {
                     autoFloorState[raidName] = { currentFloor: 1, consecutiveDefeats: 0 };
                     console.log(`[Raid Hunter] Initialized auto floor state for ${raidName} (starting at floor 1)`);
                 }
@@ -5446,6 +5822,431 @@ function stylePrioritySelect(selectEl) {
     }
 }
 
+/**
+ * Update or create the custom settings indicator for a raid
+ * @param {HTMLElement} raidDiv - The raid div element
+ * @param {string} raidName - Name of the raid
+ */
+function updateRaidCustomSettingsIndicator(raidDiv, raidName) {
+    // Remove existing indicator if present
+    const existingIndicator = raidDiv.querySelector('.raid-custom-settings-indicator');
+    if (existingIndicator) {
+        existingIndicator.remove();
+    }
+    
+    // Add indicator if raid has custom settings
+    if (hasRaidCustomSettings(raidName)) {
+        const indicator = document.createElement('span');
+        indicator.className = 'raid-custom-settings-indicator pixel-font-16';
+        indicator.textContent = '⚙';
+        indicator.title = 'Custom settings configured';
+        indicator.style.cssText = `
+            font-size: 14px;
+            color: #ff4444;
+            margin-right: 6px;
+            cursor: help;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        `;
+        
+        // Insert after the label, before Event badge or priority dropdown
+        const label = raidDiv.querySelector('label');
+        if (label) {
+            // Find the next element after label (could be Event badge, priority select, or floor select)
+            let insertBefore = null;
+            let current = label.nextSibling;
+            while (current) {
+                // Insert before first select element or Event badge
+                if (current.tagName === 'SELECT' || 
+                    (current.classList && current.classList.contains('pixel-font-16') && current.textContent === t('mods.raidHunter.event'))) {
+                    insertBefore = current;
+                    break;
+                }
+                current = current.nextSibling;
+            }
+            
+            if (insertBefore) {
+                raidDiv.insertBefore(indicator, insertBefore);
+            } else {
+                // If no suitable position found, append after label
+                label.parentNode.insertBefore(indicator, label.nextSibling);
+            }
+        } else {
+            // Fallback: append to raidDiv
+            raidDiv.appendChild(indicator);
+        }
+    }
+}
+
+/**
+ * Creates a context menu for setting per-raid options (Autorefill Stamina and Setup Method)
+ * @param {string} raidName - Name of the raid
+ * @param {number} x - X position for the menu
+ * @param {number} y - Y position for the menu
+ * @param {Function} onClose - Callback when menu is closed
+ * @returns {HTMLElement} The context menu element
+ */
+function createRaidContextMenu(raidName, x, y, onClose) {
+    // Close any existing context menu before opening a new one
+    if (openContextMenu && openContextMenu.closeMenu) {
+        openContextMenu.closeMenu();
+    }
+    
+    const settings = loadSettings();
+    const raidSettings = settings.raidSettings || {};
+    const raidSetting = raidSettings[raidName] || {};
+    
+    // Get current values
+    const currentAutoRefillStamina = raidSetting.hasOwnProperty('autoRefillStamina') 
+        ? raidSetting.autoRefillStamina 
+        : true; // Default to true
+    const currentSetupMethod = raidSetting.setupMethod || 'default';
+    
+    // Create overlay to close menu on outside click
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.zIndex = '9998';
+    overlay.style.backgroundColor = 'transparent';
+    overlay.style.pointerEvents = 'auto';
+    overlay.style.cursor = 'default';
+    
+    // Create menu container
+    const menu = document.createElement('div');
+    menu.style.position = 'fixed';
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    menu.style.zIndex = '9999';
+    menu.style.minWidth = '250px';
+    menu.style.background = "url('https://bestiaryarena.com/_next/static/media/background-dark.95edca67.png') repeat";
+    menu.style.border = '4px solid transparent';
+    menu.style.borderImage = `url("https://bestiaryarena.com/_next/static/media/4-frame.a58d0c39.png") 6 fill stretch`;
+    menu.style.borderRadius = '6px';
+    menu.style.padding = '12px';
+    menu.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
+    
+    // Title
+    const title = document.createElement('div');
+    title.className = 'pixel-font-16';
+    title.textContent = raidName;
+    title.style.color = COLOR_ACCENT;
+    title.style.fontWeight = 'bold';
+    title.style.marginBottom = '12px';
+    title.style.textAlign = 'center';
+    menu.appendChild(title);
+    
+    // Autorefill Stamina checkbox container
+    const staminaContainer = document.createElement('div');
+    staminaContainer.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+    `;
+    
+    const staminaCheckbox = document.createElement('input');
+    staminaCheckbox.type = 'checkbox';
+    staminaCheckbox.checked = currentAutoRefillStamina;
+    staminaCheckbox.style.cssText = `
+        width: 18px;
+        height: 18px;
+        accent-color: ${COLOR_ACCENT};
+        cursor: pointer;
+    `;
+    
+    const staminaLabel = document.createElement('label');
+    staminaLabel.textContent = t('mods.raidHunter.autoRefillStamina') || 'Autorefill Stamina';
+    staminaLabel.className = 'pixel-font-14';
+    staminaLabel.style.cssText = `
+        color: ${COLOR_WHITE};
+        font-size: 13px;
+        cursor: pointer;
+        flex: 1;
+    `;
+    staminaLabel.setAttribute('for', `raid-stamina-${raidName.replace(/[^a-zA-Z0-9]/g, '-')}`);
+    staminaCheckbox.id = `raid-stamina-${raidName.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    
+    staminaContainer.appendChild(staminaCheckbox);
+    staminaContainer.appendChild(staminaLabel);
+    menu.appendChild(staminaContainer);
+    
+    // Setup Method dropdown container
+    const setupContainer = document.createElement('div');
+    setupContainer.style.cssText = `
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 12px;
+    `;
+    
+    const setupLabel = document.createElement('label');
+    setupLabel.textContent = 'Setup Method';
+    setupLabel.className = 'pixel-font-14';
+    setupLabel.style.cssText = `
+        color: ${COLOR_WHITE};
+        font-size: 13px;
+        font-weight: bold;
+    `;
+    setupContainer.appendChild(setupLabel);
+    
+    const setupSelect = document.createElement('select');
+    setupSelect.className = 'pixel-font-14';
+    setupSelect.style.cssText = `
+        width: 100%;
+        padding: 6px;
+        background: ${COLOR_DARK_GRAY};
+        border: 1px solid ${COLOR_ACCENT};
+        color: ${COLOR_WHITE};
+        border-radius: 3px;
+        font-size: 13px;
+        cursor: pointer;
+        box-sizing: border-box;
+    `;
+    
+    // Add "default" as first option
+    const defaultOption = document.createElement('option');
+    defaultOption.value = 'default';
+    defaultOption.textContent = 'default';
+    setupSelect.appendChild(defaultOption);
+    
+    // Add all available setup options
+    const availableOptions = getAvailableSetupOptions();
+    availableOptions.forEach(option => {
+        const optionElement = document.createElement('option');
+        optionElement.value = option;
+        optionElement.textContent = option;
+        setupSelect.appendChild(optionElement);
+    });
+    
+    setupSelect.value = currentSetupMethod;
+    setupContainer.appendChild(setupSelect);
+    menu.appendChild(setupContainer);
+    
+    // Button container
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.gap = '6px';
+    buttonContainer.style.justifyContent = 'center';
+    
+    // Save button
+    const saveButton = document.createElement('button');
+    saveButton.className = 'pixel-font-14';
+    saveButton.textContent = 'Save';
+    saveButton.style.cssText = `
+        width: 70px;
+        height: 28px;
+        background: #1a3a1a;
+        color: #4CAF50;
+        border: 1px solid #555;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: bold;
+    `;
+    
+    saveButton.addEventListener('mouseenter', () => {
+        saveButton.style.backgroundColor = '#2a4a2a';
+        saveButton.style.borderColor = '#4CAF50';
+    });
+    saveButton.addEventListener('mouseleave', () => {
+        saveButton.style.backgroundColor = '#1a3a1a';
+        saveButton.style.borderColor = '#555';
+    });
+    
+    saveButton.addEventListener('click', () => {
+        // Save per-raid settings
+        const settings = loadSettings();
+        if (!settings.raidSettings) {
+            settings.raidSettings = {};
+        }
+        if (!settings.raidSettings[raidName]) {
+            settings.raidSettings[raidName] = {};
+        }
+        
+        settings.raidSettings[raidName].autoRefillStamina = staminaCheckbox.checked;
+        settings.raidSettings[raidName].setupMethod = setupSelect.value;
+        
+        // Save to localStorage
+        localStorage.setItem('raidHunterSettings', JSON.stringify(settings));
+        console.log(`[Raid Hunter] Saved per-raid settings for ${raidName}:`, settings.raidSettings[raidName]);
+        
+        closeMenu();
+    });
+    
+    // Clear button (only show if custom settings exist)
+    let clearButton = null;
+    if (hasRaidCustomSettings(raidName)) {
+        clearButton = document.createElement('button');
+        clearButton.className = 'pixel-font-14';
+        clearButton.textContent = 'Clear';
+        clearButton.style.cssText = `
+            width: 70px;
+            height: 28px;
+            background: #1a1a1a;
+            color: #888888;
+            border: 1px solid #555;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+        `;
+        
+        clearButton.addEventListener('mouseenter', () => {
+            clearButton.style.backgroundColor = '#2a2a2a';
+            clearButton.style.color = '#ff6b6b';
+        });
+        clearButton.addEventListener('mouseleave', () => {
+            clearButton.style.backgroundColor = '#1a1a1a';
+            clearButton.style.color = '#888888';
+        });
+        
+        clearButton.addEventListener('click', () => {
+            // Clear per-raid settings
+            const settings = loadSettings();
+            if (settings.raidSettings && settings.raidSettings[raidName]) {
+                delete settings.raidSettings[raidName];
+                // Clean up empty raidSettings object
+                if (Object.keys(settings.raidSettings).length === 0) {
+                    delete settings.raidSettings;
+                }
+                // Save to localStorage
+                localStorage.setItem('raidHunterSettings', JSON.stringify(settings));
+                console.log(`[Raid Hunter] Cleared per-raid settings for ${raidName}`);
+            }
+            // Refresh the indicator after clearing
+            if (onClose) {
+                onClose();
+            }
+            closeMenu();
+        });
+    }
+    
+    // Cancel button
+    const cancelButton = document.createElement('button');
+    cancelButton.className = 'pixel-font-14';
+    cancelButton.textContent = 'Cancel';
+    cancelButton.style.cssText = `
+        width: 70px;
+        height: 28px;
+        background: #1a1a1a;
+        color: #888888;
+        border: 1px solid #555;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: bold;
+    `;
+    
+    cancelButton.addEventListener('mouseenter', () => {
+        cancelButton.style.backgroundColor = '#2a2a2a';
+        cancelButton.style.color = '#4CAF50';
+    });
+    cancelButton.addEventListener('mouseleave', () => {
+        cancelButton.style.backgroundColor = '#1a1a1a';
+        cancelButton.style.color = '#888888';
+    });
+    
+    cancelButton.addEventListener('click', closeMenu);
+    
+    buttonContainer.appendChild(saveButton);
+    if (clearButton) {
+        buttonContainer.appendChild(clearButton);
+    }
+    buttonContainer.appendChild(cancelButton);
+    menu.appendChild(buttonContainer);
+    
+    // Close menu function
+    function closeMenu() {
+        // Remove event listeners before removing from DOM
+        overlay.removeEventListener('mousedown', overlayClickHandler);
+        overlay.removeEventListener('click', overlayClickHandler);
+        document.removeEventListener('keydown', escHandler);
+        
+        // Remove modal click handlers if they exist
+        if (openContextMenu && openContextMenu.modalClickHandler && openContextMenu.modalContent) {
+            openContextMenu.modalContent.removeEventListener('mousedown', openContextMenu.modalClickHandler);
+            openContextMenu.modalContent.removeEventListener('click', openContextMenu.modalClickHandler);
+        }
+        
+        if (overlay.parentNode) {
+            overlay.parentNode.removeChild(overlay);
+        }
+        if (menu.parentNode) {
+            menu.parentNode.removeChild(menu);
+        }
+        // Clear the global reference
+        if (openContextMenu && (openContextMenu.overlay === overlay || openContextMenu.menu === menu)) {
+            openContextMenu = null;
+        }
+        if (onClose) {
+            onClose();
+        }
+    }
+    
+    // Store reference to this menu
+    openContextMenu = {
+        overlay: overlay,
+        menu: menu,
+        closeMenu: closeMenu
+    };
+    
+    // Close on overlay click/mousedown (use mousedown for better reliability)
+    const overlayClickHandler = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMenu();
+    };
+    
+    // Close on ESC key
+    const escHandler = (e) => {
+        if (e.key === 'Escape') {
+            closeMenu();
+        }
+    };
+    
+    // Append to document first (overlay first, then menu on top)
+    document.body.appendChild(overlay);
+    document.body.appendChild(menu);
+    
+    // Attach event listeners after elements are in DOM
+    overlay.addEventListener('mousedown', overlayClickHandler);
+    overlay.addEventListener('click', overlayClickHandler);
+    document.addEventListener('keydown', escHandler);
+    
+    // Also close menu when clicking inside the settings modal (but outside the menu)
+    const modalContent = document.querySelector('[role="dialog"][data-state="open"]');
+    if (modalContent) {
+        const modalClickHandler = (e) => {
+            // Only close if click is not on the menu itself
+            if (!menu.contains(e.target)) {
+                closeMenu();
+                modalContent.removeEventListener('mousedown', modalClickHandler);
+                modalContent.removeEventListener('click', modalClickHandler);
+            }
+        };
+        modalContent.addEventListener('mousedown', modalClickHandler);
+        modalContent.addEventListener('click', modalClickHandler);
+        
+        // Store handler for cleanup
+        openContextMenu.modalClickHandler = modalClickHandler;
+        openContextMenu.modalContent = modalContent;
+    }
+    
+    // Prevent clicks on menu from closing it (stop propagation to overlay)
+    menu.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+    });
+    menu.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+    
+    return menu;
+}
+
 // Default settings with validation
 const DEFAULT_SETTINGS = {
     raidDelay: DEFAULT_RAID_START_DELAY,
@@ -5455,7 +6256,8 @@ const DEFAULT_SETTINGS = {
     setupMethod: 'Auto-setup',  // Default to Auto-setup (translation applied at display time)
     enabledRaidMaps: [],
     raidPriorities: {}, // raidName -> 'low' | 'medium' | 'high'
-    raidFloors: {} // raidName -> 0-15
+    raidFloors: {}, // raidName -> 0-15
+    raidSettings: {} // raidName -> { autoRefillStamina: boolean, setupMethod: string }
 };
 
 // Settings validation functions
@@ -5535,10 +6337,15 @@ function sanitizeSettings(settings) {
     // Validate raid floors
     if (settings.raidFloors && typeof settings.raidFloors === 'object') {
         sanitized.raidFloors = {};
+        let needsSave = false;
         Object.entries(settings.raidFloors).forEach(([raidName, floor]) => {
-            // Accept "auto" as a valid value
+            // Migrate old 'auto' to 'auto-10' for backward compatibility
             if (floor === 'auto') {
-                sanitized.raidFloors[raidName] = 'auto';
+                sanitized.raidFloors[raidName] = 'auto-10';
+                needsSave = true;
+            } else if (isAutoFloorMode(floor)) {
+                // Accept auto modes as valid values
+                sanitized.raidFloors[raidName] = floor;
             } else {
                 const floorValue = parseInt(floor);
                 if (!isNaN(floorValue) && floorValue >= 0 && floorValue <= 15) {
@@ -5546,8 +6353,36 @@ function sanitizeSettings(settings) {
                 }
             }
         });
+        // Save migrated settings if needed
+        if (needsSave) {
+            const updatedSettings = { ...settings, raidFloors: sanitized.raidFloors };
+            localStorage.setItem('raidHunterSettings', JSON.stringify(updatedSettings));
+            console.log('[Raid Hunter] Migrated old "auto" settings to "auto-10"');
+        }
     } else {
         sanitized.raidFloors = {};
+    }
+    
+    // Validate raid settings (per-raid autoRefillStamina and setupMethod)
+    if (settings.raidSettings && typeof settings.raidSettings === 'object') {
+        sanitized.raidSettings = {};
+        Object.entries(settings.raidSettings).forEach(([raidName, raidSetting]) => {
+            if (raidSetting && typeof raidSetting === 'object') {
+                sanitized.raidSettings[raidName] = {};
+                // Validate autoRefillStamina
+                if (raidSetting.hasOwnProperty('autoRefillStamina')) {
+                    sanitized.raidSettings[raidName].autoRefillStamina = validateBoolean(raidSetting.autoRefillStamina) 
+                        ? raidSetting.autoRefillStamina 
+                        : false;
+                }
+                // Validate setupMethod (must be string, can be "default" or any setup option)
+                if (raidSetting.setupMethod && typeof raidSetting.setupMethod === 'string') {
+                    sanitized.raidSettings[raidName].setupMethod = raidSetting.setupMethod;
+                }
+            }
+        });
+    } else {
+        sanitized.raidSettings = {};
     }
     
     return sanitized;
@@ -5681,9 +6516,9 @@ function autoSaveSettings() {
         document.querySelectorAll('select[id^="floor-"]').forEach(select => {
             const raidName = select.getAttribute('data-raid-name');
             if (raidName && select.value !== undefined) {
-                // Accept "auto" as a valid value
-                if (select.value === 'auto') {
-                    raidFloors[raidName] = 'auto';
+                // Accept auto modes as valid values
+                if (isAutoFloorMode(select.value)) {
+                    raidFloors[raidName] = select.value;
                 } else {
                     const floorValue = parseInt(select.value);
                     if (!isNaN(floorValue) && floorValue >= 0 && floorValue <= 15) {
@@ -5897,6 +6732,22 @@ function showValidationMessage(message, type = 'info') {
 
 function init() {
     
+    // Register with mod coordination system
+    if (window.ModCoordination) {
+        window.ModCoordination.registerMod('Raid Hunter', {
+            priority: 100,
+            metadata: { description: 'Automated raid hunting system' }
+        });
+        window.ModCoordination.updateModState('Raid Hunter', { enabled: true });
+        
+        // Subscribe to mod state changes instead of polling
+        window.ModCoordination.on('modActiveChanged', (data) => {
+            if (data.modName === 'Board Analyzer' || data.modName === 'Manual Runner') {
+                handleBoardAnalyzerCoordination();
+            }
+        });
+    }
+    
     // Load automation state from localStorage first
     loadAutomationState();
     
@@ -5905,7 +6756,7 @@ function init() {
     
     setupRaidMonitoring();
     
-    // Set up Board Analyzer coordination
+    // Set up Board Analyzer coordination (legacy polling - will be replaced by events)
     setupBoardAnalyzerCoordination();
     
     // Start monitoring for quest log (like Better Yasir)
@@ -5924,11 +6775,13 @@ function startRaidAutomation() {
     
     // Check for existing raids (only if automation is enabled)
     if (isAutomationActive()) {
-        // Add multiple retries with delays to handle game state initialization
         checkForExistingRaids();
-        setTimeout(checkForExistingRaids, MODAL_OPEN_DELAY);
-        setTimeout(checkForExistingRaids, MODAL_OPEN_DELAY + 1000); // Extra retry at +1s
-        setTimeout(checkForExistingRaids, MODAL_OPEN_DELAY + 2000); // Extra retry at +2s
+        // Only check again after delay if first check didn't find anything (avoid duplicate processing)
+        setTimeout(() => {
+            if (!isCurrentlyRaiding && !isProcessingRaid) {
+                checkForExistingRaids();
+            }
+        }, MODAL_OPEN_DELAY);
     }
 }
 
@@ -6031,10 +6884,25 @@ function modifyQuestButtonForRaiding() {
             return false;
         }
         
-    // Request control (don't use withControl - we need to keep control during the raid)
-    if (!window.QuestButtonManager.requestControl('Raid Hunter')) {
-        console.log('[Raid Hunter] Cannot modify quest button - controlled by another mod');
-        return false;
+    // Check if we already have control - if so, verify button is already modified
+    if (window.QuestButtonManager.hasControl('Raid Hunter')) {
+        const questButton = findQuestButton();
+        if (questButton) {
+            const img = questButton.querySelector('img');
+            const span = questButton.querySelector('span');
+            const isInRaidingState = img && img.src.includes('enemy.png') && span && span.textContent === 'Raiding';
+            if (isInRaidingState) {
+                // Already have control and button is already modified - no need to do anything
+                return true;
+            }
+        }
+        // Have control but button not modified - continue to modify it
+    } else {
+        // Request control (don't use withControl - we need to keep control during the raid)
+        if (!window.QuestButtonManager.requestControl('Raid Hunter')) {
+            console.log('[Raid Hunter] Cannot modify quest button - controlled by another mod');
+            return false;
+        }
     }
     
     try {
@@ -6210,6 +7078,15 @@ function startAutoplayStateMonitoring() {
         boardStateUnsubscribe = null;
     }
     
+    // Clear any pending autoplay stopped timeout
+    if (autoplayStoppedTimeout) {
+        clearTimeout(autoplayStoppedTimeout);
+        autoplayStoppedTimeout = null;
+    }
+    
+    // Reset state tracking
+    lastAutoplayState = null;
+    
     // Only start monitoring if we're currently raiding
     if (!isCurrentlyRaiding) {
         return;
@@ -6227,41 +7104,68 @@ function startAutoplayStateMonitoring() {
                     return;
                 }
                 
+                // Debounce: Only act on state changes, not every update
+                if (lastAutoplayState === isAutoplay) {
+                    return; // State hasn't changed, skip
+                }
+                lastAutoplayState = isAutoplay;
+                
                 if (isAutoplay && isOnCorrectRaidMap()) {
                     // Autoplay resumed on correct map - ensure quest button shows raiding
                     if (window.QuestButtonManager.hasControl('Raid Hunter')) {
                         modifyQuestButtonForRaiding();
                     }
                 } else if (!isAutoplay) {
-                    // Autoplay paused - check if raid ended
-                    console.log('[Raid Hunter] Autoplay stopped - checking if raid ended');
-                    
-                    // Update raid state to check if current raid still exists
-                    updateRaidState();
-                    
-                    // Check if current raid still exists in the list
-                    const raidState = globalThis.state?.raids?.getSnapshot?.();
-                    const currentRaidList = raidState?.context?.list || [];
-                    const currentRaidStillExists = currentRaidInfo && 
-                        currentRaidList.some(raid => raid.roomId === currentRaidInfo.roomId);
-                    
-                    if (!currentRaidStillExists && isCurrentlyRaiding) {
-                        // Raid ended - check for more raids in queue
-                        console.log('[Raid Hunter] Raid ended (no longer in list) - checking queue for next raid');
-                        stopAutoplayOnRaidEnd(); // This now checks queue and navigates if available
-                        return;
+                    // Autoplay paused - debounce check to avoid false positives during navigation
+                    // Clear any existing timeout
+                    if (autoplayStoppedTimeout) {
+                        clearTimeout(autoplayStoppedTimeout);
                     }
                     
-                    // Autoplay paused but raid still active - restore quest button
-                    console.log('[Raid Hunter] Autoplay paused - restoring quest button');
-                    
-                    // Force take control to restore quest button (we need to restore it regardless of current owner)
-                    if (window.QuestButtonManager.requestControl('Raid Hunter')) {
-                        restoreQuestButtonAppearance();
-                        window.QuestButtonManager.releaseControl('Raid Hunter');
-                    } else {
-                        console.log('[Raid Hunter] Could not get quest button control to restore - another mod may be using it');
-                    }
+                    // Wait a bit before checking (navigation causes temporary pauses)
+                    autoplayStoppedTimeout = setTimeout(() => {
+                        // Re-check if we're still raiding (might have changed during delay)
+                        if (!isCurrentlyRaiding) {
+                            return;
+                        }
+                        
+                        // Re-check autoplay state (might have resumed during delay)
+                        const currentBoardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+                        if (currentBoardContext?.mode === 'autoplay') {
+                            // Autoplay resumed, update tracking
+                            lastAutoplayState = true;
+                            return;
+                        }
+                        
+                        console.log('[Raid Hunter] Autoplay stopped - checking if raid ended');
+                        
+                        // Update raid state to check if current raid still exists
+                        updateRaidState();
+                        
+                        // Check if current raid still exists in the list
+                        const raidState = globalThis.state?.raids?.getSnapshot?.();
+                        const currentRaidList = raidState?.context?.list || [];
+                        const currentRaidStillExists = currentRaidInfo && 
+                            currentRaidList.some(raid => raid.roomId === currentRaidInfo.roomId);
+                        
+                        if (!currentRaidStillExists && isCurrentlyRaiding) {
+                            // Raid ended - check for more raids in queue
+                            console.log('[Raid Hunter] Raid ended (no longer in list) - checking queue for next raid');
+                            stopAutoplayOnRaidEnd(); // This now checks queue and navigates if available
+                            return;
+                        }
+                        
+                        // Autoplay paused but raid still active - restore quest button
+                        console.log('[Raid Hunter] Autoplay paused - restoring quest button');
+                        
+                        // Force take control to restore quest button (we need to restore it regardless of current owner)
+                        if (window.QuestButtonManager.requestControl('Raid Hunter')) {
+                            restoreQuestButtonAppearance();
+                            window.QuestButtonManager.releaseControl('Raid Hunter');
+                        } else {
+                            console.log('[Raid Hunter] Could not get quest button control to restore - another mod may be using it');
+                        }
+                    }, 2000); // 2 second delay to avoid false positives during navigation
                 } else if (isAutoplay && !isOnCorrectRaidMap()) {
                     // Autoplay on wrong map - restore quest button
                     console.log('[Raid Hunter] Autoplay on wrong map - restoring quest button');
@@ -6381,8 +7285,9 @@ function startQuestButtonValidation() {
                             // Quest button is not in raiding state, try to modify it
                             modifyQuestButtonForRaiding();
                         }
+                        // If already in raiding state, do nothing (avoid redundant calls)
                     } else {
-                        // Quest button not found, try to modify it
+                        // Quest button not found, try to modify it (only if not already modified recently)
                         modifyQuestButtonForRaiding();
                     }
                 } else {
@@ -6392,7 +7297,11 @@ function startQuestButtonValidation() {
                     
                     if (hasActiveRaids) {
                         // We have active raids - take control regardless of current owner
-                        console.log('[Raid Hunter] Active raids detected - taking quest button control from', window.QuestButtonManager.getCurrentOwner() || 'unknown');
+                        // Only log if we're actually taking control (not if we already tried recently)
+                        const currentOwner = window.QuestButtonManager.getCurrentOwner();
+                        if (currentOwner !== 'Raid Hunter') {
+                            console.log('[Raid Hunter] Active raids detected - taking quest button control from', currentOwner || 'unknown');
+                        }
                         modifyQuestButtonForRaiding();
                     } else {
                         // No active raids - release control and restore quest button if we still have it
@@ -6402,7 +7311,11 @@ function startQuestButtonValidation() {
                             restoreQuestButtonAppearance();
                         } else if (currentOwner === 'Better Tasker') {
                             // Better Tasker has control, don't interfere
-                            console.log('[Raid Hunter] Better Tasker has quest button control - not interfering');
+                            // Only log once to avoid spam
+                            if (!window.QuestButtonManager._betterTaskerControlLogged) {
+                                console.log('[Raid Hunter] Better Tasker has quest button control - not interfering');
+                                window.QuestButtonManager._betterTaskerControlLogged = true;
+                            }
                         }
                     }
                 }
@@ -6419,6 +7332,15 @@ function stopAutoplayStateMonitoring() {
         boardStateUnsubscribe = null;
         console.log('[Raid Hunter] Autoplay state monitoring stopped');
     }
+    
+    // Clear any pending autoplay stopped timeout
+    if (autoplayStoppedTimeout) {
+        clearTimeout(autoplayStoppedTimeout);
+        autoplayStoppedTimeout = null;
+    }
+    
+    // Reset state tracking
+    lastAutoplayState = null;
 }
 
 // Function to stop monitoring quest button validation
@@ -6444,7 +7366,7 @@ function setupAutoFloorGameEndMonitoring() {
         const raidFloors = settings.raidFloors || {};
         const floorSetting = raidFloors[raidName];
         
-        if (floorSetting !== 'auto') {
+        if (!isAutoFloorMode(floorSetting)) {
             // Not in auto floor mode, no need to monitor
             return;
         }
@@ -6463,7 +7385,7 @@ function setupAutoFloorGameEndMonitoring() {
                 // Check if still in auto floor mode
                 const currentSettings = loadSettings();
                 const currentRaidFloors = currentSettings.raidFloors || {};
-                if (currentRaidFloors[raidName] !== 'auto') {
+                if (!isAutoFloorMode(currentRaidFloors[raidName])) {
                     // No longer in auto floor mode, stop monitoring (only log once)
                     if (autoFloorBoardSubscription) {
                         stopAutoFloorGameEndMonitoring();
@@ -6484,7 +7406,7 @@ function setupAutoFloorGameEndMonitoring() {
                 }
                 
                 // Skip during Board Analyzer runs
-                if (window.__modCoordination?.boardAnalyzerRunning) {
+                if (window.ModCoordination?.isModActive('Board Analyzer')) {
                     return;
                 }
                 
@@ -6549,6 +7471,12 @@ function setupAutoFloorGameEndMonitoring() {
                     const currentFloor = getCurrentFloor();
                     console.log(`[Raid Hunter] Floor ${currentFloor}: ${isVictory ? 'Victory' : 'Defeat'}`);
                     
+                    // Get the current floor setting to determine max floor
+                    const currentSettings = loadSettings();
+                    const currentRaidFloors = currentSettings.raidFloors || {};
+                    const currentFloorSetting = currentRaidFloors[raidName];
+                    const maxFloor = getAutoMaxFloor(currentFloorSetting);
+                    
                     // Initialize auto floor state if not exists
                     if (!autoFloorState[raidName]) {
                         autoFloorState[raidName] = { currentFloor: 1, consecutiveDefeats: 0 };
@@ -6560,7 +7488,7 @@ function setupAutoFloorGameEndMonitoring() {
                                     // Victory: reset defeat counter
                                     autoState.consecutiveDefeats = 0;
                                     
-                                    if (currentFloor < 10) {
+                                    if (currentFloor < maxFloor) {
                                         // Advance to next floor
                                         const nextFloor = currentFloor + 1;
                                         autoState.currentFloor = nextFloor;
@@ -6569,8 +7497,8 @@ function setupAutoFloorGameEndMonitoring() {
                                             fn: (prev) => ({ ...prev, floor: nextFloor }) 
                                         });
                                         console.log(`[Raid Hunter] → Floor ${nextFloor}`);
-                                    } else if (currentFloor === 10) {
-                                        // Victory on floor 10: set floor to 0 and continue farming
+                                    } else if (currentFloor === maxFloor) {
+                                        // Victory on max floor: set floor to 0 and continue farming
                                         autoState.currentFloor = 0;
                                         globalThis.state.board.trigger.setState({ 
                                             fn: (prev) => ({ ...prev, floor: 0 }) 
@@ -6582,7 +7510,7 @@ function setupAutoFloorGameEndMonitoring() {
                                         }
                                         updatedSettings.raidFloors[raidName] = 0;
                                         localStorage.setItem('raidHunterSettings', JSON.stringify(updatedSettings));
-                                        console.log(`[Raid Hunter] → Floor 0 (victory on floor 10)`);
+                                        console.log(`[Raid Hunter] → Floor 0 (victory on floor ${maxFloor})`);
                                     }
                                 } else {
                                     // Defeat: increment consecutive defeat counter
@@ -6717,7 +7645,12 @@ function cleanupRaidHunter() {
         
         // Note: Control release is handled automatically by withControl functions
         
-        // 12. Reset all state using centralized function
+        // 12. Unregister from coordination system
+        if (window.ModCoordination) {
+            window.ModCoordination.unregisterMod('Raid Hunter');
+        }
+        
+        // 13. Reset all state using centralized function
         resetState('full');
         
         console.log('[Raid Hunter] Mod cleanup completed');
@@ -6736,27 +7669,76 @@ context.exports = {
     }
 };
 
-// Expose Raid Hunter state globally for Better Tasker coordination
+// Expose Raid Hunter state globally for coordination
 window.raidHunterIsCurrentlyRaiding = () => isCurrentlyRaiding;
 
+// Expose function to check if ANY raid (any priority) is currently active
+// Used by Stamina Optimizer to avoid starting during ANY raid
+window.raidHunterIsAnyRaidActive = () => {
+    if (!isCurrentlyRaiding) {
+        return false;
+    }
+    // Return true if any raid is active, regardless of priority
+    return true;
+};
+
+// Expose function to check if an ENABLED raid is currently active
+// Used by Stamina Optimizer - only stops for raids user actually wants to do
+window.raidHunterIsEnabledRaidActive = () => {
+    if (!isCurrentlyRaiding || !currentRaidInfo) {
+        return false;
+    }
+    
+    try {
+        const settings = loadSettings();
+        const enabledMaps = settings.enabledRaidMaps || [];
+        
+        // Check if current raid is in the enabled list
+        const isEnabled = enabledMaps.includes(currentRaidInfo.name);
+        
+        if (isEnabled) {
+            const priority = currentRaidInfo.priority;
+            const priorityLabel = priority === 1 ? 'HIGH' : priority === 2 ? 'MEDIUM' : priority === 3 ? 'LOW' : 'UNKNOWN';
+            console.log(`[Raid Hunter] Enabled raid active: ${currentRaidInfo.name} (${priorityLabel} priority)`);
+        }
+        
+        return isEnabled;
+    } catch (error) {
+        console.error('[Raid Hunter] Error checking enabled raid status:', error);
+        // On error, assume raid is enabled to be safe
+        return true;
+    }
+};
+
+// Expose function to get current raid priority if active
+// Returns null if no raid is active, or the priority number (1=HIGH, 2=MEDIUM, 3=LOW)
+window.raidHunterGetCurrentRaidPriority = () => {
+    if (!isCurrentlyRaiding || !currentRaidInfo) {
+        return null;
+    }
+    return currentRaidInfo.priority;
+};
+
 // Expose function to check if Raid Hunter is raiding a HIGH priority raid
-// Better Tasker should yield for HIGH and MEDIUM priority raids
-// HIGH priority raids: Better Tasker always yields
-// MEDIUM priority raids: Never yield to Better Tasker (Better Tasker must yield)
-// LOW priority raids: Yield to Better Tasker when it's active
+// Better Tasker should yield ONLY for HIGH priority raids
+// MEDIUM priority raids do NOT cause Better Tasker to yield, but also don't yield to Better Tasker
+// LOW priority raids yield to Better Tasker when it's active
 window.raidHunterIsRaidingHighPriority = () => {
     if (!isCurrentlyRaiding || !currentRaidInfo) {
         return false;
     }
+    // Only HIGH priority raids cause Better Tasker to yield
+    // MEDIUM and LOW priority raids do not trigger Better Tasker to yield
     return currentRaidInfo.priority === RAID_PRIORITY.HIGH;
 };
 
 // Expose function to check if Raid Hunter is raiding a MEDIUM priority raid
-// MEDIUM priority raids NEVER yield to Better Tasker (Better Tasker must yield)
+// Better Tasker should NOT overtake MEDIUM priority raids - they coexist (neither yields)
 window.raidHunterIsRaidingMediumPriority = () => {
     if (!isCurrentlyRaiding || !currentRaidInfo) {
         return false;
     }
+    // MEDIUM priority raids should coexist with Better Tasker - neither yields to the other per tooltip
     return currentRaidInfo.priority === RAID_PRIORITY.MEDIUM;
 };
 
@@ -6797,7 +7779,7 @@ window.raidHunterHasEnabledHighPriorityRaid = () => {
 };
 
 // Expose function to check if Raid Hunter has any enabled MEDIUM priority raids available
-// This helps Better Tasker avoid waiting unnecessarily for disabled raids
+// This helps Better Tasker coordinate properly with MEDIUM priority raids
 window.raidHunterHasEnabledMediumPriorityRaid = () => {
     try {
         const settings = loadSettings();

@@ -3692,6 +3692,27 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
             return false;
         }
         
+        // CRITICAL FIX: Check if already on correct map with autoplay active to prevent re-entry
+        const currentRoomId = getCurrentRoomId();
+        if (currentRoomId && taskingMapId && currentRoomId === taskingMapId) {
+            console.log('[Better Tasker] Already on correct task map:', currentRoomId);
+            
+            // Check if autoplay is already active and running
+            const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+            const isAutoplayMode = boardContext?.mode === 'autoplay';
+            const isAutoplaySessionRunning = boardContext?.isRunning || boardContext?.autoplayRunning;
+            
+            if (isAutoplayMode && isAutoplaySessionRunning) {
+                console.log('[Better Tasker] Autoplay already active and running - skipping navigation to prevent re-entry');
+                taskNavigationCompleted = true;
+                taskHuntingOngoing = true;
+                updateExposedState();
+                return true; // Already set up correctly
+            } else {
+                console.log('[Better Tasker] On correct map but autoplay not running - will attempt to start it');
+            }
+        }
+        
         console.log('[Better Tasker] Looking for suggested map link...');
         
         // First, ensure quest log is open
@@ -3995,13 +4016,15 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
                         startStaminaTooltipMonitoring(continuousStaminaMonitoring);
                     } else {
                         // Autoplay session is not running - need to click Start button
-                        console.log('[Better Tasker] Autoplay session not running - clicking Start button');
+                        console.log('[Better Tasker] Autoplay session not running - checking for Start button');
                         
-                        // Find and click Start button
+                        // Find Start button
                         const startButton = findButtonByText('Start');
                         if (!startButton) {
-                            console.log('[Better Tasker] Start button not found after stamina recovery');
-                            resetState('navigation');
+                            console.log('[Better Tasker] Start button not found - autoplay may already be running, continuing monitoring');
+                            // CRITICAL FIX: Don't reset state! Autoplay might already be active but not detected
+                            // Just continue monitoring instead of resetting everything
+                            startStaminaTooltipMonitoring(continuousStaminaMonitoring);
                             return;
                         }
                         
@@ -5510,6 +5533,17 @@ async function handleTaskFinishing() {
                     if (currentRoomId && taskingMapId && currentRoomId === taskingMapId) {
                         console.log(`[Better Tasker] Already on correct task map (${currentRoomId}) - skipping navigation`);
                         taskNavigationCompleted = true;
+                        
+                        // CRITICAL FIX: Also check if autoplay is already running to set taskHuntingOngoing
+                        const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+                        const isAutoplayMode = boardContext?.mode === 'autoplay';
+                        const isAutoplaySessionRunning = boardContext?.isRunning || boardContext?.autoplayRunning;
+                        
+                        if (isAutoplayMode && isAutoplaySessionRunning) {
+                            console.log('[Better Tasker] Autoplay already running - setting taskHuntingOngoing flag');
+                            taskHuntingOngoing = true;
+                        }
+                        
                         updateExposedState();
                         return;
                     }
