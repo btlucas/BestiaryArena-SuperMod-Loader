@@ -2606,10 +2606,8 @@
             item.style.alignItems = 'center';
             item.style.gap = '4px';
             
-            // Add visual indicator if creature has a keep range (before the name)
-            // Show grey lock when in creatures list (inactive), colored when in ignore list (active)
-            // Only show lock for autoseller, not autosqueezer
-            if (showKeepRangeLock) {
+            // Add visual indicator for creatures with keep range
+            if (showKeepRangeLock && !isEquipment) {
                 const keepRange = getCreatureKeepRange(name);
                 if (keepRange) {
                     const indicator = document.createElement('span');
@@ -2627,7 +2625,39 @@
                 }
             }
             
-            // Add creature name text
+            // Add visual indicator for equipment with stat filters
+            if (isEquipment) {
+                const statFilter = getEquipmentStatFilter(name);
+                if (statFilter) {
+                    const indicator = document.createElement('span');
+                    indicator.textContent = '⚙️';
+                    
+                    // Build tooltip showing which stats are kept
+                    const keptStats = [];
+                    if (statFilter.hp) keptStats.push('HP');
+                    if (statFilter.ap) keptStats.push('AP');
+                    if (statFilter.ad) keptStats.push('AD');
+                    
+                    const statusText = isIgnoreList ? 'Active' : 'Inactive';
+                    if (keptStats.length > 0) {
+                        indicator.title = `Keep only: ${keptStats.join(', ')} (${statusText})`;
+                    } else {
+                        indicator.title = `No stats selected - disenchant all (${statusText})`;
+                    }
+                    
+                    indicator.style.fontSize = '10px';
+                    indicator.style.flexShrink = '0';
+                    
+                    // Grey when inactive (in keep list), colored when active (in disenchant list)
+                    if (!isIgnoreList) {
+                        indicator.style.opacity = '0.5';
+                        indicator.style.filter = 'grayscale(100%)';
+                    }
+                    item.appendChild(indicator);
+                }
+            }
+            
+            // Add item name text
             const nameText = document.createElement('span');
             nameText.textContent = name;
             item.appendChild(nameText);
