@@ -57,6 +57,12 @@
   const SCROLL_KEYS = inventoryDB.variants?.['Summon Scrolls'] || 
     ['summonScroll1', 'summonScroll2', 'summonScroll3', 'summonScroll4', 'summonScroll5', 'summonScroll6', 'summonScroll7'];
   
+  // Import unobtainable creatures list from centralized database
+  // Add additional hardcoded unobtainable creatures that might not be in the database
+  const ADDITIONAL_UNOBTAINABLE = ['Grynch Clan Commander', 'Grynch Clan Mastermind', 'The Percht Queen', 'Gummy Raider', 'Yeti'];
+  const databaseUnobtainable = window.creatureDatabase?.UNOBTAINABLE_CREATURES || [];
+  const UNOBTAINABLE_CREATURES = [...new Set([...databaseUnobtainable, ...ADDITIONAL_UNOBTAINABLE])];
+  
   const SCROLL_CONFIG = {
     SUMMON_SCROLL_API_URL: 'https://bestiaryarena.com/api/trpc/inventory.summonScroll?batch=1',
     FRAME_IMAGE_URL: 'https://bestiaryarena.com/_next/static/media/4-frame.a58d0c39.png',
@@ -76,8 +82,6 @@
     DEFAULT_TIER_TARGETS: [0, 5, 4, 3, 2],
     // Tier thresholds based on total stats (HP + AD + AP + Armor + MR)
     TIER_THRESHOLDS: {
-      TIER_7: 95,  // Festive/Legendary
-      TIER_6: 90,  // Chromatic/Mythic
       TIER_5: 80,  // Yellow/Exceptional
       TIER_4: 70,  // Purple/Superior
       TIER_3: 60,  // Blue/Rare
@@ -1131,8 +1135,6 @@
                    (monster.magicResist || 0);
     
     const thresholds = SCROLL_CONFIG.TIER_THRESHOLDS;
-    if (statSum >= thresholds.TIER_7) return 7;
-    if (statSum >= thresholds.TIER_6) return 6;
     if (statSum >= thresholds.TIER_5) return 5;
     if (statSum >= thresholds.TIER_4) return 4;
     if (statSum >= thresholds.TIER_3) return 3;
@@ -1274,9 +1276,11 @@
         
         if (state.selectedScrollTier) selectedScrollTier = state.selectedScrollTier;
         if (state.selectedCreatures) {
+          // Filter out unobtainable creatures from saved state
           selectedCreatures = [...state.selectedCreatures].filter(c => {
             const lower = c.toLowerCase();
-            return lower !== 'gummy raider' && lower !== 'yeti';
+            const isUnobtainable = UNOBTAINABLE_CREATURES.some(u => u.toLowerCase() === lower);
+            return !isUnobtainable;
           });
         }
         if (state.stopConditions) stopConditions = { ...stopConditions, ...state.stopConditions };
@@ -1337,6 +1341,43 @@
     consecutiveRateLimits = 0;
     lastApiCall = 0;
     userDefinedSpeed = 400;
+    
+    if (rateLimitedInterval) {
+      clearInterval(rateLimitedInterval);
+      rateLimitedInterval = null;
+    }
+    
+    // Reset error state
+    resetErrorState();
+    
+    // Clear API queue
+    clearApiQueue();
+  }
+  
+  function resetSessionState() {
+    // Reset only session-specific state (stats, errors, rate limiting)
+    // Preserves user configuration (selected creatures, tier, stop conditions, etc)
+    autoscrollStats = {
+      totalScrolls: 0,
+      successfulSummons: 0,
+      targetCreatures: new Set(),
+      foundCreatures: new Map(),
+      soldMonsters: 0,
+      soldGold: 0,
+      squeezedMonsters: 0,
+      squeezedDust: 0,
+      shinyCount: 0,
+      foundShinies: []
+    };
+    
+    autoscrolling = false;
+    
+    // Reset rate limiting state
+    rateLimitedSales.clear();
+    rateLimitedSalesRetryCount.clear();
+    lastRateLimitTime = 0;
+    consecutiveRateLimits = 0;
+    lastApiCall = 0;
     
     if (rateLimitedInterval) {
       clearInterval(rateLimitedInterval);
@@ -1435,6 +1476,35 @@
     } catch (error) {
       console.error('[Autoscroller] Error getting monster ID:', error);
       return null;
+    }
+  }
+  
+  /**
+   * Check if player has a shiny variant of a creature
+   * @param {string} creatureName - Name of the creature
+   * @returns {boolean} True if player owns a shiny variant
+   */
+  function hasShinyCreature(creatureName) {
+    try {
+      const gameState = cachedPlayerState?.context;
+      if (!gameState || !gameState.monsters) {
+        return false;
+      }
+      
+      const monsterId = getMonsterIdFromName(creatureName);
+      if (!monsterId) {
+        return false;
+      }
+      
+      // Check if any owned monster of this type is shiny
+      const hasShiny = gameState.monsters.some(monster => 
+        monster && monster.gameId === monsterId && monster.shiny === true
+      );
+      
+      return hasShiny;
+    } catch (error) {
+      console.warn('[Autoscroller] Error checking shiny status:', error);
+      return false;
     }
   }
   
@@ -2132,7 +2202,7 @@
     return DOM_ELEMENTS.summonScrollButtons;
   }
 
-  function createCreaturesBox({title, items, selectedCreature, onSelectCreature}) {
+  function createCreaturesBox({title, items, selectedCreature, onSelectCreature, scrollClass = ''}) {
     const box = document.createElement('div');
     box.style.flex = '1 1 0';
     box.style.display = 'flex';
@@ -2165,6 +2235,9 @@
     box.appendChild(titleEl);
     
     const scrollContainer = document.createElement('div');
+    if (scrollClass) {
+      scrollContainer.className = scrollClass;
+    }
     scrollContainer.style.flex = '1 1 0';
     scrollContainer.style.minHeight = '0';
     scrollContainer.style.overflowY = 'auto';
@@ -2172,14 +2245,36 @@
     
     items.forEach(name => {
       const item = document.createElement('div');
-      item.textContent = name;
       item.className = 'pixel-font-14 autoscroller-creature-item';
-      item.style.color = 'rgb(230, 215, 176)';
       item.style.cursor = 'pointer';
       item.style.padding = '2px 4px';
       item.style.borderRadius = '2px';
       item.style.textAlign = 'left';
       item.style.marginBottom = '1px';
+      item.style.display = 'flex';
+      item.style.alignItems = 'center';
+      item.style.gap = '4px';
+      
+      // Check if player has shiny of this creature
+      const hasShiny = hasShinyCreature(name);
+      
+      // Add shiny star if player owns shiny variant
+      if (hasShiny) {
+        const shinyIcon = document.createElement('img');
+        shinyIcon.src = 'https://bestiaryarena.com/assets/icons/shiny-star.png';
+        shinyIcon.alt = 'shiny';
+        shinyIcon.title = 'Has shiny variant';
+        shinyIcon.style.width = '10px';
+        shinyIcon.style.height = '10px';
+        shinyIcon.style.flexShrink = '0';
+        item.appendChild(shinyIcon);
+      }
+      
+      // Add text content
+      const textSpan = document.createElement('span');
+      textSpan.textContent = name;
+      textSpan.style.color = 'rgb(230, 215, 176)';
+      item.appendChild(textSpan);
       
       // Use event delegation for better performance
       const handleMouseEnter = () => {
@@ -2207,13 +2302,21 @@
         document.querySelectorAll('.autoscroller-selected').forEach(el => {
           el.classList.remove('autoscroller-selected');
           el.style.background = 'none';
-          el.style.color = 'rgb(230, 215, 176)';
+          // Reset text color in span
+          const span = el.querySelector('span');
+          if (span) {
+            span.style.color = 'rgb(230, 215, 176)';
+          }
         });
         
         // Select this item
         item.classList.add('autoscroller-selected');
         item.style.background = 'rgba(255,255,255,0.18)';
-        item.style.color = 'rgb(255, 224, 102)';
+        // Change text color in span
+        const span = item.querySelector('span');
+        if (span) {
+          span.style.color = 'rgb(255, 224, 102)';
+        }
         
         if (onSelectCreature) {
           onSelectCreature(name);
@@ -2231,7 +2334,10 @@
       if (selectedCreature === name) {
         item.classList.add('autoscroller-selected');
         item.style.background = 'rgba(255,255,255,0.18)';
-        item.style.color = 'rgb(255, 224, 102)';
+        const span = item.querySelector('span');
+        if (span) {
+          span.style.color = 'rgb(255, 224, 102)';
+        }
       }
       
       scrollContainer.appendChild(item);
@@ -2321,9 +2427,7 @@
         flex: '1 1 0'
       });
       
-      // Load saved state first
-      loadStateFromStorage();
-      
+      // State is already loaded during initialization
       // Ensure selectedScrollTier doesn't exceed maximum visible tier
       const maxTier = getMaxVisibleScrollTier();
       if (selectedScrollTier > maxTier) {
@@ -2334,11 +2438,12 @@
       // When reopening the modal, respect already selected creatures:
       // 1) Deduplicate any prior selections
       // 2) Exclude selected creatures from the available list
-      // 3) Exclude Gummy Raider and Yeti
+      // 3) Exclude unobtainable creatures (Gummy Raider, Yeti, etc)
       selectedCreatures = Array.from(new Set(selectedCreatures));
       availableCreatures = availableCreatures.filter(c => {
         const lower = c.toLowerCase();
-        return !selectedCreatures.includes(c) && lower !== 'gummy raider' && lower !== 'yeti';
+        const isUnobtainable = UNOBTAINABLE_CREATURES.some(u => u.toLowerCase() === lower);
+        return !selectedCreatures.includes(c) && !isUnobtainable;
       });
       
       // Only reset autoscroll state, not the configuration
@@ -2373,9 +2478,23 @@
       // Clear API queue
       clearApiQueue();
       
+      // Variables to store scroll positions
+      let availableScrollPosition = 0;
+      let selectedScrollPosition = 0;
+      
       function render(statusMessage) {
         if (typeof statusMessage === 'string') {
           lastStatusMessage = statusMessage;
+        }
+        
+        // Save current scroll positions before re-rendering
+        const existingAvailableScroll = contentDiv.querySelector('.autoscroller-available-scroll');
+        const existingSelectedScroll = contentDiv.querySelector('.autoscroller-selected-scroll');
+        if (existingAvailableScroll) {
+          availableScrollPosition = existingAvailableScroll.scrollTop;
+        }
+        if (existingSelectedScroll) {
+          selectedScrollPosition = existingSelectedScroll.scrollTop;
         }
         
         contentDiv.innerHTML = '';
@@ -2386,6 +2505,7 @@
           title: 'Available Creatures',
           items: availableCreatures,
           selectedCreature: selectedGameId,
+          scrollClass: 'autoscroller-available-scroll',
           onSelectCreature: (creatureName) => {
             // Move creature from available to selected
             availableCreatures = availableCreatures.filter(c => c !== creatureName);
@@ -2403,6 +2523,8 @@
             }
             // Maintain scroll tier border
             updateSelectedScrollTierBorder();
+            // Save state immediately after selection changes
+            saveStateToStorage();
           }
         });
         creaturesBox.style.flex = '1 1 0';
@@ -2412,6 +2534,7 @@
           title: 'Selected Creatures',
           items: selectedCreatures,
           selectedCreature: null,
+          scrollClass: 'autoscroller-selected-scroll',
           onSelectCreature: (creatureName) => {
             // Move creature from selected back to available
             selectedCreatures = selectedCreatures.filter(c => c !== creatureName); // Use global variable
@@ -2428,6 +2551,8 @@
             }
             // Maintain scroll tier border
             updateSelectedScrollTierBorder();
+            // Save state immediately after selection changes
+            saveStateToStorage();
           }
         });
         selectedBox.style.flex = '1 1 0';
@@ -2452,6 +2577,18 @@
         contentDiv.appendChild(col1);
         contentDiv.appendChild(col2);
         contentDiv.appendChild(col3);
+        
+        // Restore scroll positions after rendering
+        requestAnimationFrame(() => {
+          const availableScroll = contentDiv.querySelector('.autoscroller-available-scroll');
+          const selectedScroll = contentDiv.querySelector('.autoscroller-selected-scroll');
+          if (availableScroll && availableScrollPosition > 0) {
+            availableScroll.scrollTop = availableScrollPosition;
+          }
+          if (selectedScroll && selectedScrollPosition > 0) {
+            selectedScroll.scrollTop = selectedScrollPosition;
+          }
+        });
       }
       
       function getRulesColumn() {
@@ -2588,6 +2725,7 @@
             // Update stop conditions
             stopConditions.useTotalCreatures = true;
             stopConditions.useTierSystem = false;
+            saveStateToStorage();
           } else {
             // Prevent unchecking if the other checkbox is also unchecked
             if (!tierCheckbox.checked) {
@@ -2605,6 +2743,7 @@
             tierInputs.forEach(input => input.disabled = false);
             stopConditions.useTotalCreatures = false;
             stopConditions.useTierSystem = true;
+            saveStateToStorage();
           } else {
             if (!totalCheckbox.checked) {
               tierCheckbox.checked = true;
@@ -2619,6 +2758,7 @@
           if (window.AutoscrollerRenderSelectedCreatures) {
             window.AutoscrollerRenderSelectedCreatures();
           }
+          saveStateToStorage();
         });
         
         tierInputs.forEach((input, index) => {
@@ -2627,6 +2767,7 @@
             if (window.AutoscrollerRenderSelectedCreatures) {
               window.AutoscrollerRenderSelectedCreatures();
             }
+            saveStateToStorage();
           });
         });
         
@@ -2663,6 +2804,7 @@
           if (window.updateAutoscrollButtonAppearance) {
             window.updateAutoscrollButtonAppearance();
           }
+          saveStateToStorage();
         });
         
         const speedWrapper = document.createElement('div');
@@ -2700,6 +2842,7 @@
           } else {
             speedInput.style.color = 'rgb(230, 215, 176)';
           }
+          saveStateToStorage();
         };
         
         // Set initial color based on default speed
@@ -2821,7 +2964,7 @@
           selectedCreatures.forEach(creatureName => {
             const creatureRow = document.createElement('div');
             creatureRow.style.display = 'grid';
-            creatureRow.style.gridTemplateColumns = '16px 30px 1fr 20px 20px 20px 20px 20px 20px 20px';
+            creatureRow.style.gridTemplateColumns = '16px 30px 1fr 20px 20px 20px 20px 20px 20px';
             creatureRow.style.gap = '1px';
             creatureRow.style.padding = '2px 4px';
             creatureRow.style.alignItems = 'center';
@@ -2842,10 +2985,19 @@
             
             const totalCount = creatureMonsters.length;
             
-            const tierCounts = [0, 0, 0, 0, 0];
+            const tierCounts = [0, 0, 0, 0, 0]; // Only 5 tiers
+            let shinyCount = 0;
             creatureMonsters.forEach(monster => {
-              const tier = calculateTierFromStats(monster);
-              tierCounts[tier - 1]++;
+              // Count shinies separately and don't count them in tier columns
+              if (monster.shiny === true) {
+                shinyCount++;
+              } else {
+                // Only count non-shiny monsters in tier columns
+                const tier = calculateTierFromStats(monster);
+                if (tier >= 1 && tier <= 5) {
+                  tierCounts[tier - 1]++;
+                }
+              }
             });
             
             // Note: tierCounts already includes all monsters in inventory, including those added during this session
@@ -2907,7 +3059,7 @@
             nameCell.style.whiteSpace = 'nowrap';
             creatureRow.appendChild(nameCell);
             
-            const tierColors = ['#888888', '#4ade80', '#60a5fa', '#a78bfa', '#fbbf24', '#00d4ff', '#ff1493'];
+            const tierColors = ['#888888', '#4ade80', '#60a5fa', '#a78bfa', '#fbbf24'];
             tierCounts.forEach((count, index) => {
               const countCell = document.createElement('div');
               countCell.textContent = count;
@@ -2918,6 +3070,17 @@
               countCell.style.textAlign = 'center';
               creatureRow.appendChild(countCell);
             });
+            
+            // Add shiny count column
+            const shinyCell = document.createElement('div');
+            shinyCell.textContent = shinyCount;
+            shinyCell.style.color = '#ff69b4'; // Pink for shiny
+            shinyCell.style.fontWeight = 'bold';
+            shinyCell.style.fontSize = '9px';
+            shinyCell.style.fontFamily = 'Arial, sans-serif';
+            shinyCell.style.textAlign = 'center';
+            shinyCell.title = 'Shiny creatures';
+            creatureRow.appendChild(shinyCell);
             
             gridContainer.appendChild(creatureRow);
           });
@@ -3178,6 +3341,9 @@
             if (window.updateAutoscrollButtonAppearance) {
               window.updateAutoscrollButtonAppearance();
             }
+            
+            // Save state when scroll tier changes
+            saveStateToStorage();
           };
           
           eventHandlers.add(btn, 'click', handleScrollTierClick);
@@ -3268,9 +3434,9 @@
           // Clear modal cache since modal is closing
           DOM_ELEMENTS.modal = null;
           
-          // Save state before resetting
+          // Save state before resetting session
           saveStateToStorage();
-          resetAutoscrollState();
+          resetSessionState(); // Only reset session state, preserve configuration
         }
       });
       setTimeout(() => {
@@ -3679,8 +3845,16 @@
       console.warn('[Autoscroller] Inventory database not found, using fallback scroll keys');
     }
     
-    // Initialize modules
-    resetAutoscrollState();
+    if (window.creatureDatabase && window.creatureDatabase.UNOBTAINABLE_CREATURES) {
+      console.log('[Autoscroller] Using centralized creature database for unobtainable creatures:', UNOBTAINABLE_CREATURES.length, 'creatures');
+    } else {
+      console.warn('[Autoscroller] Creature database not found for unobtainable creatures');
+    }
+    
+    // Load saved state before initializing
+    loadStateFromStorage();
+    
+    // Initialize modules (but don't reset the loaded state)
     DOMCache.clear();
     clearApiQueue();
     

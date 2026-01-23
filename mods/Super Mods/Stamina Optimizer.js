@@ -955,6 +955,62 @@ async function pauseAutoplayWithButton() {
     }
 }
 
+// Wait for game to end before stopping
+async function waitForGameToEnd() {
+    console.log('[Stamina Optimizer] Waiting for game to end...');
+    
+    let attempts = 0;
+    const maxAttempts = 60; // 2 minutes max wait time (60 * 2 seconds)
+    
+    while (attempts < maxAttempts) {
+        try {
+            // Check multiple indicators that game has ended
+            const boardContext = globalThis.state.board.getSnapshot().context;
+            const gameTimerContext = globalThis.state.gameTimer.getSnapshot().context;
+            
+            const isGameRunning = boardContext.gameStarted;
+            const gameState = gameTimerContext.state; // 'initial', 'victory', 'defeat'
+            
+            // Game has ended if any of these conditions are true:
+            // 1. board.gameStarted is false
+            // 2. gameTimer.state is 'victory' or 'defeat' (not 'initial')
+            if (!isGameRunning || (gameState !== 'initial')) {
+                console.log(`[Stamina Optimizer] ✅ Game ended after ${attempts * 2} seconds - gameStarted: ${isGameRunning}, gameState: ${gameState}`);
+                return true;
+            }
+            
+            // If game has been running for more than 30 seconds and is still in initial state,
+            // it might be stuck - proceed anyway
+            if (attempts >= 15 && gameState === 'initial' && isGameRunning) {
+                console.log(`[Stamina Optimizer] Game stuck in initial state for ${attempts * 2}s - proceeding anyway`);
+                return true;
+            }
+            
+            // Log progress every 10 seconds (every 5 attempts)
+            if (attempts % 5 === 0 && attempts > 0) {
+                console.log(`[Stamina Optimizer] Still waiting for game to end... (${attempts * 2}s elapsed)`);
+            }
+            
+            await sleep(2000); // Check every 2 seconds
+            attempts++;
+            
+        } catch (error) {
+            console.error('[Stamina Optimizer] Error checking game state during wait:', error);
+            await sleep(2000);
+            attempts++;
+        }
+    }
+    
+    console.log('[Stamina Optimizer] Game state monitoring timeout - proceeding anyway...');
+    return false;
+}
+
+// Reload the page
+function reloadPage() {
+    console.log('[Stamina Optimizer] 🔄 Reloading page...');
+    window.location.reload();
+}
+
 // Stop autoplay (only if we initiated it) - Uses pause button to stop session without changing mode
 async function stopAutoplay() {
     if (!wasInitiatedByMod || !isCurrentlyActive) {
@@ -969,6 +1025,10 @@ async function stopAutoplay() {
     try {
         setStateFlag('isStoppingAutoplay');
         const boardContext = globalThis.state.board.getSnapshot().context;
+        
+        // Check if game is currently running
+        const isGameRunning = boardContext.gameStarted;
+        
         if (boardContext.mode === 'autoplay') {
             const paused = await pauseAutoplayWithButton();
             if (paused) {
@@ -979,7 +1039,21 @@ async function stopAutoplay() {
             }
         }
         
-        releaseControlAndResetState();
+        // If game is running, wait for it to end before reloading
+        if (isGameRunning) {
+            console.log('[Stamina Optimizer] Game is still running - waiting for it to end...');
+            await waitForGameToEnd();
+            
+            // Small delay to ensure all end-game processes are complete
+            await sleep(2000);
+            
+            // Reload the page
+            releaseControlAndResetState();
+            reloadPage();
+        } else {
+            releaseControlAndResetState();
+        }
+        
         return true;
     } catch (error) {
         console.error('[Stamina Optimizer] Error stopping autoplay:', error);
@@ -1398,7 +1472,11 @@ async function monitorStamina() {
                 return;
             }
             
-            console.log(`[Stamina Optimizer] ⏹️ Stamina (${currentStamina}) < min (${minStamina}) - stopping`);
+            // When stamina is low:
+            // 1. Pause autoplay
+            // 2. Wait for current game to end
+            // 3. Reload page to clear any stuck states
+            console.log(`[Stamina Optimizer] ⏹️ Stamina (${currentStamina}) < min (${minStamina}) - stopping and will reload after game ends`);
             try {
                 await stopAutoplay();
                 updateButton();

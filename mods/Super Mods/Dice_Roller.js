@@ -918,12 +918,12 @@
     btn.setAttribute('data-gameid', creature.gameId);
     
     // Constrain button size to match inner content
-    btn.style.width = '34px';
-    btn.style.height = '34px';
-    btn.style.minWidth = '34px';
-    btn.style.minHeight = '34px';
-    btn.style.maxWidth = '34px';
-    btn.style.maxHeight = '34px';
+    btn.style.width = '38px';
+    btn.style.height = '38px';
+    btn.style.minWidth = '38px';
+    btn.style.minHeight = '38px';
+    btn.style.maxWidth = '38px';
+    btn.style.maxHeight = '38px';
     btn.style.display = 'flex';
     btn.style.alignItems = 'center';
     btn.style.justifyContent = 'center';
@@ -950,12 +950,12 @@
     slot.setAttribute('data-highlighted', 'false');
     slot.setAttribute('data-recent', 'false');
     slot.setAttribute('data-multiselected', 'false');
-    slot.style.width = '34px';
-    slot.style.height = '34px';
-    slot.style.minWidth = '34px';
-    slot.style.minHeight = '34px';
-    slot.style.maxWidth = '34px';
-    slot.style.maxHeight = '34px';
+    slot.style.width = '38px';
+    slot.style.height = '38px';
+    slot.style.minWidth = '38px';
+    slot.style.minHeight = '38px';
+    slot.style.maxWidth = '38px';
+    slot.style.maxHeight = '38px';
     
     // Rarity border/background
     const rarity = getRarityFromStats(creature);
@@ -963,6 +963,14 @@
     rarityDiv.setAttribute('role', 'none');
     rarityDiv.className = 'has-rarity absolute inset-0 z-1 opacity-80';
     rarityDiv.setAttribute('data-rarity', rarity);
+    // Add stronger, more visible border (only for non-max tier)
+    if (rarity !== 5) {
+      rarityDiv.style.filter = 'brightness(1.3) saturate(1.5)';
+      rarityDiv.style.boxShadow = 'inset 0 0 0 2px currentColor, 0 0 4px currentColor';
+    } else {
+      // Max tier (yellow) keeps original look
+      rarityDiv.style.boxShadow = 'inset 0 0 0 2px currentColor, 0 0 4px currentColor';
+    }
     slot.appendChild(rarityDiv);
     
     // Star tier icon
@@ -992,14 +1000,14 @@
     const img = document.createElement('img');
     img.className = 'pixelated ml-auto';
     img.alt = 'creature';
-    img.width = 34;
-    img.height = 34;
-    img.style.width = '34px';
-    img.style.height = '34px';
-    img.style.minWidth = '34px';
-    img.style.minHeight = '34px';
-    img.style.maxWidth = '34px';
-    img.style.maxHeight = '34px';
+    img.width = 32;
+    img.height = 32;
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.minWidth = '32px';
+    img.style.minHeight = '32px';
+    img.style.maxWidth = '32px';
+    img.style.maxHeight = '32px';
     img.style.objectFit = 'contain';
     img.src = creature.shiny === true ? `/assets/portraits/${creature.gameId}-shiny.png` : `/assets/portraits/${creature.gameId}.png`;
     slot.appendChild(img);
@@ -1303,9 +1311,9 @@
     scrollArea.style.width = 'auto';
     scrollArea.style.overflowY = 'auto';
     scrollArea.style.display = 'grid';
-    scrollArea.style.gridTemplateColumns = 'repeat(6, 1fr)';
-    scrollArea.style.gridAutoRows = '34px';
-    scrollArea.style.gap = '0';
+    scrollArea.style.gridTemplateColumns = 'repeat(5, 1fr)';
+    scrollArea.style.gridAutoRows = '38px';
+    scrollArea.style.gap = '4px';
     scrollArea.style.padding = '5px 20px 5px 5px';
     scrollArea.style.background = 'rgba(40,40,40,0.96)';
     scrollArea.style.scrollbarWidth = 'none';
@@ -1448,7 +1456,7 @@
   // Render creature list
   function renderCreatureList(scrollArea, monsters, onSelect, updateDetailsOnly, selectedGameId, getSelectedDiceTier, getAvailableStats, selectedDice, lastStatusMessage) {
     if (!monsters.length) {
-      scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 6;">No creatures found.</div>';
+      scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 5;">No creatures found.</div>';
       return;
     }
     
@@ -1586,15 +1594,15 @@
     addTrackedEventListener(scrollArea, 'searchCleared', () => {
       const monsters = safeGetMonsters();
       if (!monsters.length) {
-        scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 6;">No creatures found.</div>';
+        scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 5;">No creatures found.</div>';
         return;
       }
       
       scrollArea.innerHTML = '';
       scrollArea.style.display = 'grid';
-      scrollArea.style.gridTemplateColumns = 'repeat(6, 1fr)';
-      scrollArea.style.gridAutoRows = '34px';
-      scrollArea.style.gap = '0';
+      scrollArea.style.gridTemplateColumns = 'repeat(5, 1fr)';
+      scrollArea.style.gridAutoRows = '38px';
+      scrollArea.style.gap = '4px';
       
       renderCreatureList(scrollArea, monsters, onSelect, updateDetailsOnly, selectedGameId, getSelectedDiceTier, getAvailableStats, selectedDice, lastStatusMessage);
     });
@@ -1635,7 +1643,7 @@
       // Re-render the full creature list
       const monsters = safeGetMonsters();
       if (!monsters.length) {
-        scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 6;">No creatures found.</div>';
+        scrollArea.innerHTML = '<div style="color:#bbb;text-align:center;padding:16px;grid-column: span 5;">No creatures found.</div>';
         return;
       }
       
@@ -1644,9 +1652,9 @@
       
               // Ensure grid layout is maintained after clearing
         scrollArea.style.display = 'grid';
-        scrollArea.style.gridTemplateColumns = 'repeat(6, 1fr)';
-        scrollArea.style.gridAutoRows = '34px';
-        scrollArea.style.gap = '0';
+        scrollArea.style.gridTemplateColumns = 'repeat(5, 1fr)';
+        scrollArea.style.gridAutoRows = '38px';
+        scrollArea.style.gap = '4px';
       
       // Optimized sorting with pre-calculated values
       const sortedMonsters = [...monsters].map(monster => ({
@@ -1875,7 +1883,7 @@
         PerformanceMonitor.end('creature-search-filter');
       } catch (error) {
         console.error('[Dice Roller] Error in applyCreatureSearch:', error);
-        scrollArea.innerHTML = '<div style="color:#f66;text-align:center;padding:16px;grid-column: span 6;">Error filtering creatures.</div>';
+        scrollArea.innerHTML = '<div style="color:#f66;text-align:center;padding:16px;grid-column: span 5;">Error filtering creatures.</div>';
       }
     });
   }
@@ -2066,6 +2074,14 @@
       borderDiv.setAttribute('role', 'none');
       borderDiv.className = 'has-rarity absolute inset-0 z-5 opacity-80';
       borderDiv.setAttribute('data-rarity', rarity);
+      // Add stronger, more visible border (only for non-max tier)
+      if (rarity !== 5) {
+        borderDiv.style.filter = 'brightness(1.3) saturate(1.5)';
+        borderDiv.style.boxShadow = 'inset 0 0 0 2px currentColor, 0 0 4px currentColor';
+      } else {
+        // Max tier (yellow) keeps original look
+        borderDiv.style.boxShadow = 'inset 0 0 0 2px currentColor, 0 0 4px currentColor';
+      }
       portraitContainer.appendChild(borderDiv);
       const img = document.createElement('img');
       img.src = creature.shiny === true ? `/assets/portraits/${creature.gameId}-shiny.png` : `/assets/portraits/${creature.gameId}.png`;
@@ -2783,7 +2799,7 @@
       if (creatureForStatus && !statusContinuouslyUseSameDice) {
         availableStatsForStatus = availableStatsForStatus.filter(stat => {
           const currentValue = creatureForStatus[stat] || 0;
-          return currentValue < DICE_CONFIG.STAT_LIMIT;
+          return currentValue < (DICE_CONFIG.STAT_LIMIT - 1);
         });
       }
       
@@ -2870,11 +2886,11 @@
           const hasHigherTierDice = selectedDice.length > 1 && Math.max(...selectedDice) > Math.min(...selectedDice);
           
           if (hasHigherTierDice) {
-            // For "Smart stat & dice roller" with multiple dice tiers, first filter out stats at maximum
+            // For "Smart stat & dice roller" with multiple dice tiers, first filter out stats at maximum (19 or 20)
             if (creature) {
               availableStatsForRoll = availableStatsForRoll.filter(stat => {
                 const currentValue = creature[stat] || 0;
-                const isAtMax = currentValue >= DICE_CONFIG.STAT_LIMIT;
+                const isAtMax = currentValue >= (DICE_CONFIG.STAT_LIMIT - 1);
                 return !isAtMax;
               });
             }
@@ -2884,9 +2900,9 @@
               const stats = ['hp', 'ap', 'ad', 'armor', 'magicResist'];
               const statValues = stats.map(stat => ({ stat, value: creature[stat] || 0 }));
               
-              // Filter to only include stats that are not at maximum
+              // Filter to only include stats that are not at maximum (19 or 20)
               const availableStatValues = statValues.filter(item => {
-                const isAtMax = item.value >= DICE_CONFIG.STAT_LIMIT;
+                const isAtMax = item.value >= (DICE_CONFIG.STAT_LIMIT - 1);
                 return !isAtMax;
               });
               
@@ -2954,11 +2970,11 @@
               availableStatsForRoll = statValues.slice(0, maxStatsForDice).map(item => item.stat);
             }        }
           } else {
-            // Standard filtering for other modes
+            // Standard filtering for other modes (consider 19 or 20 as maximum)
             if (creature) {
               availableStatsForRoll = availableStatsForRoll.filter(stat => {
                 const currentValue = creature[stat] || 0;
-                const isAtMax = currentValue >= DICE_CONFIG.STAT_LIMIT;
+                const isAtMax = currentValue >= (DICE_CONFIG.STAT_LIMIT - 1);
                 return !isAtMax;
               });
             }
@@ -2972,7 +2988,7 @@
           const hasHigherTierDice = selectedDice.length > 1 && Math.max(...selectedDice) > Math.min(...selectedDice);
           
           if (!continuouslyChangeDice || hasHigherTierDice) {
-            updateRollStatus('All stats are at maximum (20) - cannot improve tier further');
+            updateRollStatus('All stats are at maximum (19+) - cannot improve tier further');
             return true; // Return true to indicate "success" (no more improvement possible)
           } else {
             // For "Smart stat & dice roller" without higher tier dice, continue rolling
@@ -3011,7 +3027,7 @@
         "0": {
           "json": {
             "rarity": diceToUse,
-            "manipStats": availableStatsForRoll, // Only roll stats that are below 20 (unless continuouslyUseSameDice is enabled)
+            "manipStats": availableStatsForRoll, // Only roll stats that are below 19 (unless continuouslyUseSameDice is enabled)
             "monsterId": selectedGameId
           }
         }
