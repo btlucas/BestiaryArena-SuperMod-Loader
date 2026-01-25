@@ -826,6 +826,7 @@ let taskerState = TASKER_STATES.DISABLED;
 let taskHuntingOngoing = false;
 let taskNavigationCompleted = false;
 let autoplayPausedByTasker = false;
+let autoplayStartedByTasker = false; // Track if tasker initiated the autoplay session
 let pendingTaskCompletion = false;
 let taskOperationInProgress = false;
 let questBlipObserver = null;
@@ -890,6 +891,7 @@ function resetState(resetType = 'full') {
         // Common reset groups to eliminate duplication
         const resetCommonFlags = () => {
             autoplayPausedByTasker = false;
+            autoplayStartedByTasker = false;
             pendingTaskCompletion = false;
             taskOperationInProgress = false;
             lastNoTaskCheck = 0;
@@ -930,6 +932,7 @@ function resetState(resetType = 'full') {
                 } else {
                     // Reset flags but preserve quest button state and tasking map ID during task hunting
                     autoplayPausedByTasker = false;
+                    autoplayStartedByTasker = false;
                     pendingTaskCompletion = false;
                     taskOperationInProgress = false;
                     lastNoTaskCheck = 0;
@@ -1047,6 +1050,12 @@ function cleanupTaskCompletionFailure(reason = 'unknown') {
         
         // Track this failure
         trackFailureAndCheckRefresh(reason);
+        
+        // CRITICAL: Release autoplay control if we have it
+        if (window.AutoplayManager && window.AutoplayManager.hasControl('Better Tasker')) {
+            console.log('[Better Tasker] Releasing autoplay control during cleanup');
+            window.AutoplayManager.releaseControl('Better Tasker');
+        }
         
         // Clear all task-related flags
         resetState('taskComplete');
@@ -3706,6 +3715,9 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
                 console.log('[Better Tasker] Autoplay already active and running - skipping navigation to prevent re-entry');
                 taskNavigationCompleted = true;
                 taskHuntingOngoing = true;
+                // NOTE: Do NOT set autoplayStartedByTasker = true here
+                // The session was already running, so tasker did not initiate it
+                // This means if user pauses, tasker will respect the pause
                 updateExposedState();
                 return true; // Already set up correctly
             } else {
@@ -3926,8 +3938,14 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
                             console.log('[Better Tasker] Autoplay session running - continuing stamina monitoring');
                             startStaminaTooltipMonitoring(continuousStaminaMonitoring);
                         } else {
-                            // Autoplay session is not running - need to click Start button
-                            console.log('[Better Tasker] Autoplay session not running - clicking Start button');
+                            // Autoplay session is not running - only restart if tasker initiated it
+                            if (!autoplayStartedByTasker) {
+                                console.log('[Better Tasker] Autoplay session paused but was not started by tasker - respecting pause state');
+                                stopStaminaTooltipMonitoring();
+                                return;
+                            }
+                            
+                            console.log('[Better Tasker] Autoplay session not running - clicking Start button (tasker initiated session)');
                             
                             // Find and click Start button
                             const startButton = findButtonByText('Start');
@@ -3960,6 +3978,10 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
                 
                 console.log('[Better Tasker] Clicking Start button...');
                 startButton.click();
+                
+                // Mark that tasker initiated this autoplay session
+                autoplayStartedByTasker = true;
+                console.log('[Better Tasker] Autoplay session started by tasker');
                 
                 // Save the current map ID for tasking validation
                 const currentMapId = getCurrentRoomId();
@@ -4015,8 +4037,14 @@ async function navigateToSuggestedMapAndStartAutoplay(suggestedMapElement = null
                         console.log('[Better Tasker] Autoplay session running - continuing stamina monitoring');
                         startStaminaTooltipMonitoring(continuousStaminaMonitoring);
                     } else {
-                        // Autoplay session is not running - need to click Start button
-                        console.log('[Better Tasker] Autoplay session not running - checking for Start button');
+                        // Autoplay session is not running - only restart if tasker initiated it
+                        if (!autoplayStartedByTasker) {
+                            console.log('[Better Tasker] Autoplay session paused but was not started by tasker - respecting pause state');
+                            stopStaminaTooltipMonitoring();
+                            return;
+                        }
+                        
+                        console.log('[Better Tasker] Autoplay session not running - checking for Start button (tasker initiated session)');
                         
                         // Find Start button
                         const startButton = findButtonByText('Start');
@@ -4812,8 +4840,15 @@ async function resumeAutoplay() {
     try {
         console.log('[Better Tasker] Resuming autoplay using state API...');
         
-        // Only resume if we previously paused it
+        // Only resume if we previously paused it AND we initiated the session
         if (autoplayPausedByTasker) {
+            // Additional check: only resume if tasker initiated the autoplay session
+            if (!autoplayStartedByTasker) {
+                console.log('[Better Tasker] Autoplay was paused but not started by tasker - will not resume');
+                autoplayPausedByTasker = false;
+                return false;
+            }
+            
             // Check if we still have control
             if (!window.AutoplayManager.hasControl('Better Tasker')) {
                 console.log('[Better Tasker] Cannot resume autoplay - no longer have control');
@@ -5179,6 +5214,12 @@ async function findAndClickFinishButton() {
             updateExposedState();
             console.log('[Better Tasker] Task completion and progress flags cleared - no finish button');
             
+            // Release autoplay control
+            if (window.AutoplayManager && window.AutoplayManager.hasControl('Better Tasker')) {
+                console.log('[Better Tasker] Releasing autoplay control - no finish button found');
+                window.AutoplayManager.releaseControl('Better Tasker');
+            }
+            
             // Stop quest button validation and restore appearance
             stopQuestButtonValidation();
             restoreQuestButtonAppearance();
@@ -5192,6 +5233,12 @@ async function findAndClickFinishButton() {
         // Clear flags on error
         taskOperationInProgress = false;
         updateExposedState();
+        
+        // Release autoplay control on error
+        if (window.AutoplayManager && window.AutoplayManager.hasControl('Better Tasker')) {
+            console.log('[Better Tasker] Releasing autoplay control after error');
+            window.AutoplayManager.releaseControl('Better Tasker');
+        }
         
         return false;
     }
@@ -5291,21 +5338,47 @@ async function openQuestLogWithRetry() {
 
 // Handle quest log opening and button clicking AFTER game finishes
 async function handlePostGameTaskCompletion() {
-    try {
-        console.log('[Better Tasker] Handling post-game task completion...');
-        
-        // Wait for game to finish completely
-        console.log('[Better Tasker] Waiting for game to finish...');
-        await sleep(1000); // Wait for game end animations and UI to settle
+    // Create a timeout promise to prevent getting stuck
+    const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Task completion timeout')), 30000); // 30 second timeout
+    });
+    
+    // Create the actual work promise
+    const workPromise = (async () => {
+        try {
+            console.log('[Better Tasker] Handling post-game task completion...');
+            
+            // Wait for game to finish completely
+            console.log('[Better Tasker] Waiting for game to finish...');
+            await sleep(1000); // Wait for game end animations and UI to settle
         
         
         // Check current task state to determine what to do
         const playerContext = globalThis.state.player.getSnapshot().context;
         const task = playerContext?.questLog?.task;
         
-        if (task && task.ready) {
+        // Enhanced logging for task state
+        if (task) {
+            console.log('[Better Tasker] Current task state:', {
+                hasGameId: !!task.gameId,
+                ready: task.ready,
+                killCount: task.killCount,
+                points: task.points,
+                resetAt: task.resetAt ? new Date(task.resetAt).toLocaleString() : 'null'
+            });
+        } else {
+            console.log('[Better Tasker] No task found in player context');
+        }
+        
+        // Check if task should be ready based on multiple criteria
+        const isTaskReady = task && (
+            task.ready || // Primary check: task.ready flag
+            (task.gameId && task.killCount >= 60) // Fallback: high kill count indicates completion
+        );
+        
+        if (isTaskReady) {
             // Task is ready - open quest log and look for Finish button
-            console.log('[Better Tasker] Task is ready, opening quest log for Finish button...');
+            console.log('[Better Tasker] Task is ready for completion, opening quest log for Finish button...');
             
             // Try to open quest log with retry mechanism
             const questLogOpened = await openQuestLogWithRetry();
@@ -5315,10 +5388,12 @@ async function handlePostGameTaskCompletion() {
                 await findAndClickFinishButton();
             } else {
                 console.log('[Better Tasker] Failed to open quest log after 3 attempts');
+                // Release control even on failure
+                cleanupTaskCompletionFailure('failed to open quest log');
             }
         } else {
             // No active task or not ready - check if new task is available
-            console.log('[Better Tasker] No ready task, checking if new task is available...');
+            console.log('[Better Tasker] Task not ready for completion, checking if new task is available...');
             
             if (isQuestBlipAvailable()) {
                 console.log('[Better Tasker] New task available - opening quest log to accept task');
@@ -5329,14 +5404,27 @@ async function handlePostGameTaskCompletion() {
             }
         }
         
-        // Clear task operation flag on successful completion
-        taskOperationInProgress = false;
-        updateExposedState();
-        console.log('[Better Tasker] Task operation completed successfully');
-        
+            // Clear task operation flag on successful completion
+            taskOperationInProgress = false;
+            updateExposedState();
+            console.log('[Better Tasker] Task operation completed successfully');
+            
+        } catch (error) {
+            console.error('[Better Tasker] Error in handlePostGameTaskCompletion:', error);
+            cleanupTaskCompletionFailure('error in handlePostGameTaskCompletion');
+        }
+    })();
+    
+    // Race between work and timeout
+    try {
+        await Promise.race([workPromise, timeoutPromise]);
     } catch (error) {
-        console.error('[Better Tasker] Error in handlePostGameTaskCompletion:', error);
-        cleanupTaskCompletionFailure('error in handlePostGameTaskCompletion');
+        if (error.message === 'Task completion timeout') {
+            console.error('[Better Tasker] Task completion timed out after 30 seconds - cleaning up');
+            cleanupTaskCompletionFailure('task completion timeout');
+        } else {
+            throw error; // Re-throw if it's a different error
+        }
     }
 }
 
@@ -5542,6 +5630,9 @@ async function handleTaskFinishing() {
                         if (isAutoplayMode && isAutoplaySessionRunning) {
                             console.log('[Better Tasker] Autoplay already running - setting taskHuntingOngoing flag');
                             taskHuntingOngoing = true;
+                            // NOTE: Do NOT set autoplayStartedByTasker = true here
+                            // The session was already running, so tasker did not initiate it
+                            // This means if user pauses, tasker will respect the pause
                         }
                         
                         updateExposedState();
@@ -5954,6 +6045,26 @@ function subscribeToGameState() {
                         if (task && task.killCount !== undefined) {
                             console.log(`[Better Tasker] Progress: ${task.killCount} creatures killed`);
                             
+                            // EMERGENCY: If 80+ creatures killed, force page reload
+                            if (task.killCount >= 80) {
+                                console.error('[Better Tasker] EMERGENCY: 80+ creatures killed - task is stuck! Forcing page reload...');
+                                
+                                // Check if autoplay is still running
+                                const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+                                const isAutoplayRunning = boardContext?.mode === 'autoplay' && (boardContext?.isRunning || boardContext?.autoplayRunning);
+                                
+                                if (isAutoplayRunning) {
+                                    // Stop autoplay first
+                                    await pauseAutoplayWithButton();
+                                    await sleep(1000);
+                                }
+                                
+                                // Clear all states and reload
+                                console.log('[Better Tasker] Reloading page to recover from stuck state...');
+                                window.location.reload();
+                                return;
+                            }
+                            
                             // If 60+ creatures killed, assume task is finished (max quest requirement)
                             if (task.killCount >= 60) {
                                 await triggerFailsafe('60+ creatures killed');
@@ -5997,6 +6108,26 @@ function subscribeToGameState() {
                         
                         if (task && task.killCount !== undefined) {
                             console.log(`[Better Tasker] Progress: ${task.killCount} creatures killed`);
+                            
+                            // EMERGENCY: If 80+ creatures killed, force page reload
+                            if (task.killCount >= 80) {
+                                console.error('[Better Tasker] EMERGENCY: 80+ creatures killed - task is stuck! Forcing page reload...');
+                                
+                                // Check if autoplay is still running
+                                const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+                                const isAutoplayRunning = boardContext?.mode === 'autoplay' && (boardContext?.isRunning || boardContext?.autoplayRunning);
+                                
+                                if (isAutoplayRunning) {
+                                    // Stop autoplay first
+                                    await pauseAutoplayWithButton();
+                                    await sleep(1000);
+                                }
+                                
+                                // Clear all states and reload
+                                console.log('[Better Tasker] Reloading page to recover from stuck state...');
+                                window.location.reload();
+                                return;
+                            }
                             
                             // If 60+ creatures killed, assume task is finished (max quest requirement)
                             if (task.killCount >= 60) {
@@ -6249,6 +6380,36 @@ function runAutomationTasks() {
         
         // Don't run automation if task hunting is ongoing
         if (taskHuntingOngoing) {
+            // EMERGENCY CHECK: Even during task hunting, check for excessive kills
+            try {
+                if (globalThis.state?.player) {
+                    const playerContext = globalThis.state.player.getSnapshot().context;
+                    const task = playerContext?.questLog?.task;
+                    
+                    if (task && task.killCount >= 80) {
+                        console.error('[Better Tasker] EMERGENCY: 80+ creatures killed during task hunting - forcing page reload!');
+                        
+                        // Check if autoplay is still running
+                        const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
+                        const isAutoplayRunning = boardContext?.mode === 'autoplay' && (boardContext?.isRunning || boardContext?.autoplayRunning);
+                        
+                        if (isAutoplayRunning) {
+                            // Stop autoplay first
+                            pauseAutoplayWithButton().then(() => {
+                                setTimeout(() => {
+                                    window.location.reload();
+                                }, 1000);
+                            });
+                        } else {
+                            window.location.reload();
+                        }
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.error('[Better Tasker] Error checking kill count:', error);
+            }
+            
             console.log('[Better Tasker] Task hunting ongoing, skipping automation');
             return;
         }
