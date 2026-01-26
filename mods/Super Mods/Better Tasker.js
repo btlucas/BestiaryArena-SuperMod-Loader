@@ -6045,9 +6045,9 @@ function subscribeToGameState() {
                         if (task && task.killCount !== undefined) {
                             console.log(`[Better Tasker] Progress: ${task.killCount} creatures killed`);
                             
-                            // EMERGENCY: If 80+ creatures killed, force page reload
-                            if (task.killCount >= 80) {
-                                console.error('[Better Tasker] EMERGENCY: 80+ creatures killed - task is stuck! Forcing page reload...');
+                            // EMERGENCY: If 61+ creatures killed, force page reload
+                            if (task.killCount >= 61) {
+                                console.error('[Better Tasker] EMERGENCY: 61+ creatures killed - task is stuck! Forcing page reload...');
                                 
                                 // Check if autoplay is still running
                                 const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
@@ -6109,9 +6109,9 @@ function subscribeToGameState() {
                         if (task && task.killCount !== undefined) {
                             console.log(`[Better Tasker] Progress: ${task.killCount} creatures killed`);
                             
-                            // EMERGENCY: If 80+ creatures killed, force page reload
-                            if (task.killCount >= 80) {
-                                console.error('[Better Tasker] EMERGENCY: 80+ creatures killed - task is stuck! Forcing page reload...');
+                            // EMERGENCY: If 61+ creatures killed, force page reload
+                            if (task.killCount >= 61) {
+                                console.error('[Better Tasker] EMERGENCY: 61+ creatures killed - task is stuck! Forcing page reload...');
                                 
                                 // Check if autoplay is still running
                                 const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
@@ -6386,8 +6386,8 @@ function runAutomationTasks() {
                     const playerContext = globalThis.state.player.getSnapshot().context;
                     const task = playerContext?.questLog?.task;
                     
-                    if (task && task.killCount >= 80) {
-                        console.error('[Better Tasker] EMERGENCY: 80+ creatures killed during task hunting - forcing page reload!');
+                    if (task && task.killCount >= 61) {
+                        console.error('[Better Tasker] EMERGENCY: 61+ creatures killed during task hunting - forcing page reload!');
                         
                         // Check if autoplay is still running
                         const boardContext = globalThis.state?.board?.getSnapshot?.()?.context;
