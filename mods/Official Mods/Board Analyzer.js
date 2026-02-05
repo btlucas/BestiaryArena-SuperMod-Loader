@@ -41,7 +41,6 @@ const CHART_BAR_SPACING = 4;
 const CHART_BATCH_SIZE = 10;
 const CHART_MIN_HEIGHT = 20;
 const CHART_MAX_HEIGHT = 120;
-const CHART_MAX_BARS = 1000; // Limit chart to prevent performance issues with large analyses
 
 // Modal constants
 const MODAL_TYPES = {
@@ -342,43 +341,10 @@ class ChartRenderer {
     this.onBarClick = onBarClick; // Callback to access full results when needed
   }
   
-  // Sample results if there are too many for performance
+  // Return all results without limit
   sampleResults(results, isSorted = false) {
-    if (results.length <= CHART_MAX_BARS) {
-      return results;
-    }
-    
-    // For sorted views (time/rank), just take the top results
-    if (isSorted) {
-      console.log(`[Board Analyzer] Chart: Showing top ${CHART_MAX_BARS} of ${results.length} results`);
-      return results.slice(0, CHART_MAX_BARS);
-    }
-    
-    // For "All Runs" view, use smart sampling that includes best runs
-    const sampled = new Set();
-    
-    // Always include top performers by time (completed runs first)
-    const sortedByTime = [...results].sort((a, b) => {
-      if (a.completed !== b.completed) return b.completed - a.completed;
-      return a.ticks - b.ticks;
-    });
-    const topCount = Math.min(100, Math.floor(CHART_MAX_BARS * 0.1));
-    for (let i = 0; i < topCount; i++) {
-      sampled.add(sortedByTime[i]);
-    }
-    
-    // Fill remaining with even sampling to maintain overview
-    const remaining = CHART_MAX_BARS - sampled.size;
-    const step = results.length / remaining;
-    for (let i = 0; i < results.length && sampled.size < CHART_MAX_BARS; i += step) {
-      sampled.add(results[Math.floor(i)]);
-    }
-    
-    // Convert back to array and restore original order
-    const sampledArray = Array.from(sampled).sort((a, b) => a.originalIndex - b.originalIndex);
-    
-    console.log(`[Board Analyzer] Chart: Showing ${sampledArray.length} of ${results.length} results (top ${topCount} + sampling)`);
-    return sampledArray;
+    // Show all results - no limit
+    return results;
   }
   
   render() {

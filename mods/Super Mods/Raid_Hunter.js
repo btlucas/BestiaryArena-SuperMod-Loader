@@ -6538,6 +6538,11 @@ function autoSaveSettings() {
         
         settings.raidFloors = raidFloors;
         
+        // Preserve per-raid settings (from context menu)
+        if (currentSettings.raidSettings) {
+            settings.raidSettings = currentSettings.raidSettings;
+        }
+        
         // Validate and sanitize settings before saving
         const sanitizedSettings = sanitizeSettings(settings);
         

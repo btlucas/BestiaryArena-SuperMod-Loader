@@ -67,6 +67,8 @@
     completedSteps: 0,
     // Track if we're on the final step
     isFinalStep: false,
+    // Track cumulative dust change during forging to prevent race conditions
+    cumulativeDustChange: 0,
     // Track selected equipment filter for col1
     selectedEquipmentFilter: null,
     // Track global search term across tabs
@@ -992,12 +994,14 @@
               }, 200); // Check again after 200ms
             }
 
-            // Update dust
+            // Update dust - accumulate changes to prevent race conditions
             if (result.dustDiff) {
               console.log(`[Better Forge] 💰 Dust change: ${result.dustDiff}, type: ${typeof result.dustDiff}`);
               const dustChange = Number(result.dustDiff) || 0;
               console.log(`[Better Forge] 💰 Converted dust change: ${dustChange}`);
-              updateLocalInventoryGoldDust(0, dustChange);
+              // Accumulate dust change instead of updating immediately
+              forgeState.cumulativeDustChange += dustChange;
+              // Still update display for UX feedback
               updateDustDisplayWithAnimation(dustChange);
             }
 
@@ -1075,6 +1079,12 @@
           console.error('[Better Forge] 💥 Forge step error:', error);
           forgeState.isForgingInProgress = false;
           
+          // Reset cumulative dust change on error to prevent incorrect state
+          if (forgeState.cumulativeDustChange !== 0) {
+            console.warn(`[Better Forge] ⚠️ Resetting cumulative dust change (${forgeState.cumulativeDustChange}) due to error`);
+            forgeState.cumulativeDustChange = 0;
+          }
+          
           if (forgeState.isForging) {
             updateAutoUpgradeStatus('Forge error - retrying...');
           }
@@ -1096,6 +1106,13 @@
       console.log('[Better Forge] 🎉 Forging process completed successfully!');
       console.log('[Better Forge] 🧹 Cleaning up forge state...');
       
+      // Apply accumulated dust change before cleanup
+      if (forgeState.cumulativeDustChange !== 0) {
+        console.log(`[Better Forge] 💰 Applying cumulative dust change: ${forgeState.cumulativeDustChange}`);
+        updateLocalInventoryGoldDust(0, forgeState.cumulativeDustChange);
+        forgeState.cumulativeDustChange = 0; // Reset after applying
+      }
+      
       forgeState.isForging = false;
       forgeState.isForgingInProgress = false;
       forgeState.isForgeConfirmationMode = false;
@@ -1106,6 +1123,7 @@
       forgeState.totalSteps = 0;
       forgeState.completedSteps = 0;
       forgeState.isFinalStep = false;
+      forgeState.cumulativeDustChange = 0; // Ensure reset on cleanup
 
       if (forgeState.forgeInterval) {
         clearInterval(forgeState.forgeInterval);
@@ -2656,8 +2674,9 @@
   
   function getUserCurrentDust() {
     try {
-      const playerContext = globalThis.state?.player?.getSnapshot()?.context;
-      const dust = Number(playerContext?.dust) || 0;
+      const snapshot = globalThis.state?.player?.getSnapshot();
+      // Try multiple locations for dust, matching the update function's read pattern
+      const dust = Number(snapshot?.context?.dust ?? snapshot?.inventory?.dust ?? snapshot?.dust ?? 0);
       return dust;
     } catch (error) {
       console.error('[Better Forge] Error getting user dust:', error);
@@ -5295,9 +5314,11 @@
         fn: (prev) => {
           const newState = { ...prev };
           newState.inventory = { ...prev.inventory };
+          // Ensure context exists for dust updates
+          newState.context = { ...prev.context };
           
           const currentGold = Number(prev.inventory?.gold ?? prev.gold ?? 0);
-          const currentDust = Number(prev.inventory?.dust ?? prev.dust ?? 0);
+          const currentDust = Number(prev.inventory?.dust ?? prev.dust ?? prev.context?.dust ?? 0);
           
           if (goldChange !== 0) {
             const newGold = currentGold + goldChange;
@@ -5311,6 +5332,7 @@
             const safeDust = Math.max(0, newDust);
             newState.inventory.dust = safeDust;
             newState.dust = safeDust;
+            newState.context.dust = safeDust; // Also update context.dust for getUserCurrentDust()
           }
           
           return newState;
@@ -5853,4 +5875,3 @@
   }
   
 })();
-

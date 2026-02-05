@@ -125,7 +125,8 @@ const HARDCODED_MONSTER_STATS = {
   'energy crystal': { baseStats: { hp: 350, ad: 0, ap: 0, armor: 150, magicResist: 30 }, level: 50 },
   'magma crystal': { baseStats: { hp: 350, ad: 0, ap: 0, armor: 350, magicResist: 350 }, level: 50 },
   'regeneration tank': { baseStats: { hp: 8352, ad: 0, ap: 0, armor: 126, magicResist: 696 }, level: 99 },
-  'monster cauldron': { baseStats: { hp: 1114, ad: 92, ap: 112, armor: 45, magicResist: 42 }, level: 99 }
+  'monster cauldron': { baseStats: { hp: 1114, ad: 92, ap: 112, armor: 45, magicResist: 42 }, level: 99 },
+  'grynch clan mastermind': { baseStats: { hp: 220, ad: 0, ap: 0, armor: 66, magicResist: 66 }, level: 200 }
 };
 
 // Get creature data from centralized database
@@ -295,6 +296,866 @@ const GAME_DATA = {
   EXP_TABLE,
   REGION_NAME_MAP
 };
+
+function cyclopediaNormalizeSearchText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cyclopediaGetInventoryDisplayName(itemKey) {
+  if (!itemKey) return 'Unknown Item';
+
+  // Prefer explicit tooltips mapping
+  if (inventoryTooltips?.[itemKey]?.displayName) return inventoryTooltips[itemKey].displayName;
+
+  // Prefer static database (if present)
+  const staticItem = INVENTORY_CONFIG?.staticItems?.[itemKey];
+  if (staticItem?.name) return staticItem.name;
+
+  // Fallback: convert camelCase/keys into a readable label
+  return String(itemKey)
+    .replace(/^item_/, 'Item ')
+    .replace(/^custom_/, '')
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+function cyclopediaGetInventoryObtainText(itemKey, displayName) {
+  if (!itemKey) return '';
+  const dn = displayName || cyclopediaGetInventoryDisplayName(itemKey);
+  return (
+    inventoryTooltips?.[dn]?.obtain ||
+    inventoryTooltips?.[itemKey]?.obtain ||
+    inventoryTooltips?.[dn]?.text ||
+    inventoryTooltips?.[itemKey]?.text ||
+    ''
+  );
+}
+
+const CyclopediaHomeSearch = (() => {
+  const MAX_RESULTS = 40;
+  const MAX_META_CREATURES = 25;
+  const ABILITY_TEXT_CACHE_VERSION = 2;
+
+  let baseEntries = null;
+  let roomCreatureIndex = null; // Map<roomId, Set<creatureName>>
+  let creatureAbilityTextCache = null; // Map<creatureNameLower, { v: number, text: string } | string>
+  let abilityIndexState = {
+    running: false,
+    done: 0,
+    total: 0,
+    queue: [],
+    listeners: new Set(),
+    tickTimer: null,
+    lastNotifyAt: 0,
+    lastNotifyDone: 0,
+    lastNotifySignature: ''
+  };
+
+  function getRegionDisplayName(regionId) {
+    return GAME_DATA.REGION_NAME_MAP?.[String(regionId).toLowerCase()] || String(regionId);
+  }
+
+  function safeGetRegions() {
+    const regions = globalThis.state?.utils?.REGIONS;
+    return Array.isArray(regions) ? regions : [];
+  }
+
+  function buildRoomIdToRegionId(regions) {
+    const map = new Map();
+    regions.forEach((region) => {
+      const regionId = region?.id;
+      if (!regionId || !Array.isArray(region.rooms)) return;
+      region.rooms.forEach((room) => {
+        if (room?.id) map.set(room.id, regionId);
+      });
+    });
+    return map;
+  }
+
+  function ensureRoomCreatureIndex() {
+    if (roomCreatureIndex) return roomCreatureIndex;
+    roomCreatureIndex = new Map();
+
+    const rooms = globalThis.state?.utils?.ROOMS;
+    const utils = globalThis.state?.utils;
+    if (!rooms || !utils?.getMonster) return roomCreatureIndex;
+
+    try {
+      Object.entries(rooms).forEach(([roomId, room]) => {
+        const actors = room?.file?.data?.actors;
+        if (!Array.isArray(actors) || actors.length === 0) return;
+
+        let set = roomCreatureIndex.get(roomId);
+        if (!set) {
+          set = new Set();
+          roomCreatureIndex.set(roomId, set);
+        }
+
+        actors.forEach((actor) => {
+          const monsterId = actor?.id;
+          if (!monsterId) return;
+          try {
+            const monster = utils.getMonster(monsterId);
+            const name = monster?.metadata?.name;
+            if (name) set.add(name);
+          } catch {
+            // ignore
+          }
+        });
+      });
+    } catch (error) {
+      console.warn('[Cyclopedia] HomeSearch: error building room creature index:', error);
+    }
+
+    return roomCreatureIndex;
+  }
+
+  function ensureCreatureAbilityTextCache() {
+    if (!creatureAbilityTextCache) creatureAbilityTextCache = new Map();
+    return creatureAbilityTextCache;
+  }
+
+  function isAbilityTextCacheEntryUpToDate(value) {
+    return (
+      value &&
+      typeof value === 'object' &&
+      value.v === ABILITY_TEXT_CACHE_VERSION &&
+      typeof value.text === 'string'
+    );
+  }
+
+  function getAbilityTextFromCacheValue(value) {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && typeof value.text === 'string') return value.text;
+    return '';
+  }
+
+  function notifyAbilityIndexUpdate() {
+    try {
+      const progress = getAbilityIndexProgress();
+      const now = Date.now();
+      const isDone = progress.total > 0 && progress.done >= progress.total && !progress.running;
+      const signature = `${progress.running ? 1 : 0}:${progress.done}:${progress.total}`;
+
+      // If nothing changed since last emit, don't spam listeners (prevents UI refresh loops).
+      if (!isDone && signature === (abilityIndexState.lastNotifySignature || '')) return;
+
+      // Throttle notifications to avoid UI constantly re-rendering while indexing.
+      // Always notify at completion, otherwise notify at most every 300ms or every 25 items.
+      const timeOk = now - (abilityIndexState.lastNotifyAt || 0) >= 300;
+      const stepOk = (progress.done - (abilityIndexState.lastNotifyDone || 0)) >= 25;
+      if (!isDone && !timeOk && !stepOk) return;
+
+      abilityIndexState.lastNotifyAt = now;
+      abilityIndexState.lastNotifyDone = progress.done;
+      abilityIndexState.lastNotifySignature = signature;
+
+      abilityIndexState.listeners.forEach((fn) => {
+        try { fn(progress); } catch { /* ignore */ }
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  function getAbilityIndexProgress() {
+    return {
+      running: !!abilityIndexState.running,
+      done: Number(abilityIndexState.done) || 0,
+      total: Number(abilityIndexState.total) || 0
+    };
+  }
+
+  function subscribeAbilityIndex(listener) {
+    if (typeof listener !== 'function') return () => {};
+    abilityIndexState.listeners.add(listener);
+    // Send initial state immediately
+    try { listener(getAbilityIndexProgress()); } catch { /* ignore */ }
+    return () => {
+      abilityIndexState.listeners.delete(listener);
+    };
+  }
+
+  // One-shot ability indexing promise (used by the Home search UI).
+  // This allows: index ability text once -> refresh results once -> stop.
+  let abilityIndexPromise = null;
+
+  function isAbilityIndexReady() {
+    try {
+      if (!baseEntries) baseEntries = buildBaseEntries();
+      const cache = ensureCreatureAbilityTextCache();
+      const creatureEntries = baseEntries.filter(e => e.kind === 'creature');
+      for (const entry of creatureEntries) {
+        const key = cyclopediaNormalizeSearchText(entry.label);
+        if (!key) continue;
+        const cached = cache.get(key);
+        if (!isAbilityTextCacheEntryUpToDate(cached)) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function ensureAbilityIndexReady() {
+    try {
+      // If UI components aren't available, we can't render TooltipContent -> no ability indexing.
+      if (typeof globalThis.state?.utils?.createUIComponent !== 'function') return Promise.resolve(false);
+      if (isAbilityIndexReady()) return Promise.resolve(true);
+
+      if (abilityIndexPromise) return abilityIndexPromise;
+
+      abilityIndexPromise = new Promise((resolve) => {
+        let resolved = false;
+        let timeoutId = null;
+
+        const cleanupAndResolve = (value) => {
+          if (resolved) return;
+          resolved = true;
+          abilityIndexPromise = null;
+          if (timeoutId) clearTimeout(timeoutId);
+          resolve(value);
+        };
+
+        const unsubscribe = subscribeAbilityIndex((progress) => {
+          const done = !progress?.running && (progress?.total || 0) > 0 && (progress?.done || 0) >= (progress?.total || 0);
+          if (done || isAbilityIndexReady()) {
+            try { unsubscribe(); } catch { /* ignore */ }
+            cleanupAndResolve(true);
+          }
+        });
+
+        // Safety timeout: if something prevents completion, don't hang forever.
+        timeoutId = setTimeout(() => {
+          try { unsubscribe(); } catch { /* ignore */ }
+          cleanupAndResolve(false);
+        }, 20000);
+        try { TimerManager.addTimeout(timeoutId, 'homeSearchAbilityIndexWait'); } catch { /* ignore */ }
+
+        startAbilityIndexing();
+      });
+
+      return abilityIndexPromise;
+    } catch {
+      abilityIndexPromise = null;
+      return Promise.resolve(false);
+    }
+  }
+
+  function resolveMonsterIdByName(creatureName) {
+    try {
+      if (!creatureName || typeof creatureName !== 'string') return null;
+      const key = creatureName.toLowerCase();
+      try {
+        // Ensure name map is built (safe; function is hoisted)
+        if (typeof buildCyclopediaMonsterNameMap === 'function') buildCyclopediaMonsterNameMap();
+      } catch {
+        // ignore
+      }
+
+      const entry = cyclopediaState?.monsterNameMap?.get?.(key);
+      if (entry) {
+        const m = entry.monster;
+        if (m?.gameId !== undefined) return m.gameId;
+        if (entry.index !== undefined) return entry.index;
+      }
+
+      const maps = window.BestiaryModAPI?.utility?.maps;
+      const gameId = maps?.monsterNamesToGameIds?.get?.(key);
+      return gameId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function collectStringLeaves(value, out, depth = 0) {
+    if (!value || depth > 3) return;
+    if (typeof value === 'string') {
+      // Skip obvious URLs/paths that don't help search
+      if (value.startsWith('http://') || value.startsWith('https://')) return;
+      out.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 20).forEach((v) => collectStringLeaves(v, out, depth + 1));
+      return;
+    }
+    if (typeof value === 'object') {
+      const entries = Object.entries(value).slice(0, 30);
+      for (const [, v] of entries) collectStringLeaves(v, out, depth + 1);
+    }
+  }
+
+  function tryRenderTooltipContentToText(TooltipContent, props) {
+    try {
+      const createUIComponent = globalThis.state?.utils?.createUIComponent;
+      if (typeof createUIComponent !== 'function') return '';
+      if (!TooltipContent) return '';
+
+      const host = document.createElement('div');
+      // Off-screen but with real size so components that depend on layout still render.
+      host.style.cssText = 'position:fixed;left:-99999px;top:0;width:520px;max-width:520px;height:auto;overflow:visible;opacity:0;pointer-events:none;z-index:-1;';
+      const root = document.createElement('div');
+      root.classList.add('tooltip-prose');
+      root.classList.add(FONT_CONSTANTS.SIZES.SMALL);
+      root.style.width = '100%';
+      root.style.height = '100%';
+      root.style.color = COLOR_CONSTANTS.TEXT;
+      root.style.lineHeight = '1.1';
+      host.appendChild(root);
+      document.body.appendChild(host);
+
+      const component = props ? createUIComponent(root, TooltipContent, props) : createUIComponent(root, TooltipContent);
+      if (component && typeof component.mount === 'function') component.mount();
+
+      const text = root.textContent || '';
+
+      if (component && typeof component.unmount === 'function') component.unmount();
+      host.remove();
+      return text;
+    } catch {
+      return '';
+    }
+  }
+
+  function extractAbilityTextAsync(creatureName, onDone) {
+    try {
+      const monsterId = resolveMonsterIdByName(creatureName);
+      const monsterData = monsterId ? safeGetMonsterData(monsterId) : null;
+      const skill = monsterData?.metadata?.skill;
+      const TooltipContent = skill?.TooltipContent;
+      const createUIComponent = globalThis.state?.utils?.createUIComponent;
+      let prefixText = '';
+      try {
+        if (skill) {
+          // Best-effort: include any string metadata in skill object (cheap, helps search).
+          const leaves = [];
+          collectStringLeaves(skill, leaves);
+          const leafText = leaves.join('\n');
+          if (leafText) prefixText += leafText + '\n';
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!TooltipContent || typeof createUIComponent !== 'function') {
+        onDone(prefixText);
+        return;
+      }
+
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-99999px;top:0;width:520px;max-width:520px;height:auto;overflow:visible;opacity:0;pointer-events:none;z-index:-1;';
+      const root = document.createElement('div');
+      root.classList.add('tooltip-prose');
+      root.classList.add(FONT_CONSTANTS.SIZES.SMALL);
+      root.style.width = '100%';
+      root.style.height = 'auto';
+      root.style.color = COLOR_CONSTANTS.TEXT;
+      root.style.lineHeight = '1.1';
+      host.appendChild(root);
+      document.body.appendChild(host);
+
+      // Render -> flush -> read (normal), then render awakened -> flush -> read.
+      const mountAndRead = (props, cb) => {
+        let component = null;
+        try {
+          root.textContent = '';
+          component = props ? createUIComponent(root, TooltipContent, props) : createUIComponent(root, TooltipContent);
+          if (component && typeof component.mount === 'function') component.mount();
+        } catch {
+          cb('', component);
+          return;
+        }
+
+        requestAnimationFrame(() => {
+          let text = '';
+          try {
+            text = root.textContent || '';
+          } catch {
+            text = '';
+          }
+          cb(text, component);
+        });
+      };
+
+      mountAndRead(null, (normalText, normalComponent) => {
+        try {
+          if (normalComponent && typeof normalComponent.unmount === 'function') normalComponent.unmount();
+        } catch {
+          // ignore
+        }
+
+        mountAndRead({ awaken: true }, (awakenedText, awakenedComponent) => {
+          try {
+            if (awakenedComponent && typeof awakenedComponent.unmount === 'function') awakenedComponent.unmount();
+          } catch {
+            // ignore
+          }
+          try { host.remove(); } catch { /* ignore */ }
+
+          const combined = `${prefixText || ''}${normalText || ''}\n${awakenedText || ''}`.trim();
+          onDone(combined);
+        });
+      });
+    } catch {
+      onDone('');
+    }
+  }
+
+  function getCreatureAbilityText(creatureName) {
+    const cache = ensureCreatureAbilityTextCache();
+    const key = cyclopediaNormalizeSearchText(creatureName);
+    if (!key) return '';
+    if (cache.has(key)) {
+      const cached = cache.get(key);
+      if (isAbilityTextCacheEntryUpToDate(cached)) return cached.text;
+      if (typeof cached === 'string') return cached;
+    }
+
+    let text = '';
+    try {
+      const monsterId = resolveMonsterIdByName(creatureName);
+      const monsterData = monsterId ? safeGetMonsterData(monsterId) : null;
+      const skill = monsterData?.metadata?.skill;
+
+      if (skill) {
+        // Fast path: collect any string fields that might exist in skill metadata
+        const leaves = [];
+        collectStringLeaves(skill, leaves);
+        const leafText = leaves.join('\n');
+        if (leafText) text += leafText + '\n';
+
+        // TooltipContent is what renders the actual ability description in the UI
+        const TooltipContent = skill.TooltipContent;
+        if (TooltipContent) {
+          const normal = tryRenderTooltipContentToText(TooltipContent, null);
+          if (normal) text += normal + '\n';
+
+          // Also include awakened mode text (if supported)
+          const awakened = tryRenderTooltipContentToText(TooltipContent, { awaken: true });
+          if (awakened) text += awakened + '\n';
+        }
+      }
+    } catch {
+      text = text || '';
+    }
+
+    text = cyclopediaNormalizeSearchText(text);
+    cache.set(key, { v: ABILITY_TEXT_CACHE_VERSION, text });
+    return text;
+  }
+
+  function startAbilityIndexing() {
+    try {
+      const createUIComponent = globalThis.state?.utils?.createUIComponent;
+      if (typeof createUIComponent !== 'function') return;
+      if (abilityIndexState.running) return;
+
+      if (!baseEntries) baseEntries = buildBaseEntries();
+      const creatureEntries = baseEntries.filter(e => e.kind === 'creature');
+      const cache = ensureCreatureAbilityTextCache();
+      const allNames = creatureEntries.map(e => e.label);
+      const missing = allNames.filter((name) => {
+        const key = cyclopediaNormalizeSearchText(name);
+        // If entry is missing or stale, (re)index it.
+        if (!key) return false;
+        const cached = cache.get(key);
+        return !isAbilityTextCacheEntryUpToDate(cached);
+      });
+
+      // If everything is already indexed, do NOT restart indexing (prevents constant UI refresh).
+      if (missing.length === 0) {
+        abilityIndexState.queue = [];
+        abilityIndexState.total = allNames.length;
+        abilityIndexState.done = allNames.length;
+        abilityIndexState.running = false;
+        notifyAbilityIndexUpdate();
+        return;
+      }
+
+      abilityIndexState.queue = missing;
+      abilityIndexState.total = allNames.length;
+      abilityIndexState.done = allNames.length - missing.length;
+      abilityIndexState.running = true;
+      notifyAbilityIndexUpdate();
+
+      const tick = () => {
+        // Stop if reset/finished
+        if (!abilityIndexState.running) return;
+
+        const next = abilityIndexState.queue.shift();
+        if (!next) {
+          abilityIndexState.running = false;
+          // Ensure we report full completion once.
+          abilityIndexState.done = abilityIndexState.total;
+          notifyAbilityIndexUpdate();
+          return;
+        }
+
+        const key = cyclopediaNormalizeSearchText(next);
+        if (key && isAbilityTextCacheEntryUpToDate(cache.get(key))) {
+          abilityIndexState.done++;
+          notifyAbilityIndexUpdate();
+          abilityIndexState.tickTimer = setTimeout(tick, 5);
+          return;
+        }
+
+        extractAbilityTextAsync(next, (rawText) => {
+          try {
+            const normalized = cyclopediaNormalizeSearchText(rawText);
+            if (key) cache.set(key, { v: ABILITY_TEXT_CACHE_VERSION, text: normalized });
+          } catch {
+            // ignore
+          }
+          abilityIndexState.done++;
+          notifyAbilityIndexUpdate();
+          abilityIndexState.tickTimer = setTimeout(tick, 5);
+        });
+      };
+
+      abilityIndexState.tickTimer = setTimeout(tick, 5);
+    } catch {
+      // ignore
+    }
+  }
+
+  function snippetAroundMatch(fullText, qNorm) {
+    if (!fullText || !qNorm) return '';
+    const idx = fullText.indexOf(qNorm);
+    if (idx < 0) return '';
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(fullText.length, idx + qNorm.length + 60);
+    const raw = fullText.slice(start, end).trim();
+    return raw ? `Ability: …${raw}…` : 'Ability match';
+  }
+
+  function buildBaseEntries() {
+    const entries = [];
+
+    // Creatures (name + roles)
+    const creatureNames = [
+      ...(Array.isArray(GAME_DATA.ALL_CREATURES) ? GAME_DATA.ALL_CREATURES : []),
+      ...(Array.isArray(GAME_DATA.UNOBTAINABLE_CREATURES) ? GAME_DATA.UNOBTAINABLE_CREATURES : [])
+    ];
+    creatureNames.forEach((name) => {
+      const roles = (() => {
+        try {
+          return getCreatureRoles(name) || [];
+        } catch {
+          return [];
+        }
+      })();
+      const roleText = Array.isArray(roles) ? roles.join(' ') : '';
+
+      entries.push({
+        kind: 'creature',
+        label: name,
+        search: cyclopediaNormalizeSearchText(`${name} ${roleText}`),
+        target: { type: 'creature', name }
+      });
+    });
+
+    // Equipment (name + light metadata)
+    const equipmentNames = Array.isArray(GAME_DATA.ALL_EQUIPMENT) ? GAME_DATA.ALL_EQUIPMENT : [];
+    equipmentNames.forEach((name) => {
+      let statusText = '';
+      try {
+        const st = getEquipmentStatus(name);
+        statusText = `${st?.owned ? 'owned' : 'unowned'} ${st?.isT5 ? 't5' : ''}`;
+      } catch {
+        statusText = '';
+      }
+
+      entries.push({
+        kind: 'equipment',
+        label: name,
+        search: cyclopediaNormalizeSearchText(`${name} ${statusText}`),
+        target: { type: 'equipment', name }
+      });
+    });
+
+    // Inventory categories + items
+    const categories = INVENTORY_CONFIG?.categories || {};
+    Object.entries(categories).forEach(([categoryName, itemKeys]) => {
+      entries.push({
+        kind: 'inventoryCategory',
+        label: categoryName,
+        search: cyclopediaNormalizeSearchText(`${categoryName} inventory`),
+        target: { type: 'inventoryCategory', categoryName }
+      });
+
+      if (!Array.isArray(itemKeys)) return;
+      itemKeys.forEach((itemKey) => {
+        const displayName = cyclopediaGetInventoryDisplayName(itemKey);
+        const obtainText = cyclopediaGetInventoryObtainText(itemKey, displayName);
+        entries.push({
+          kind: 'inventoryItem',
+          label: displayName,
+          search: cyclopediaNormalizeSearchText(`${displayName} ${categoryName} ${obtainText}`),
+          subtitle: categoryName,
+          target: { type: 'inventoryItem', categoryName, itemDisplayName: displayName }
+        });
+      });
+    });
+
+    // Regions + maps (from game state)
+    const regions = safeGetRegions();
+    const roomNameMap = globalThis.state?.utils?.ROOM_NAME || {};
+    const roomIdToRegionId = buildRoomIdToRegionId(regions);
+
+    regions.forEach((region) => {
+      const regionId = region?.id;
+      if (!regionId) return;
+
+      const regionName = getRegionDisplayName(regionId);
+      entries.push({
+        kind: 'region',
+        label: regionName,
+        search: cyclopediaNormalizeSearchText(`${regionName} ${regionId} region`),
+        target: { type: 'region', regionId, regionName }
+      });
+
+      const rooms = Array.isArray(region.rooms) ? region.rooms : [];
+      rooms.forEach((room) => {
+        const roomId = room?.id;
+        if (!roomId) return;
+        const mapName = roomNameMap[roomId] || roomId;
+
+        let meta = '';
+        try {
+          const raid = isMapRaid(roomId);
+          const dynamic = isDynamicEventMap(roomId);
+          const diff = globalThis.state?.utils?.ROOMS?.[roomId]?.difficulty;
+          meta = `${raid ? 'raid' : ''} ${dynamic ? 'event' : ''} ${diff ? `difficulty ${diff}` : ''}`;
+        } catch {
+          meta = '';
+        }
+
+        entries.push({
+          kind: 'map',
+          label: mapName,
+          search: cyclopediaNormalizeSearchText(`${mapName} ${regionName} ${meta}`),
+          subtitle: regionName,
+          target: {
+            type: 'map',
+            regionId: roomIdToRegionId.get(roomId) || regionId,
+            regionName,
+            mapId: roomId,
+            mapName
+          }
+        });
+      });
+    });
+
+    // Also include maps that are not present in REGIONS (fallback)
+    Object.entries(roomNameMap).forEach(([roomId, mapName]) => {
+      const alreadyIncluded = entries.some((e) => e.kind === 'map' && e.target?.mapId === roomId);
+      if (alreadyIncluded) return;
+
+      const regionId = roomIdToRegionId.get(roomId);
+      const regionName = regionId ? getRegionDisplayName(regionId) : 'Other Maps';
+
+      entries.push({
+        kind: 'map',
+        label: mapName || roomId,
+        search: cyclopediaNormalizeSearchText(`${mapName || roomId} ${regionName}`),
+        subtitle: regionName,
+        target: { type: 'map', regionId, regionName, mapId: roomId, mapName: mapName || roomId }
+      });
+    });
+
+    return entries;
+  }
+
+  function scoreEntry(entry, qNorm) {
+    const labelNorm = cyclopediaNormalizeSearchText(entry.label);
+    if (!labelNorm) return 0;
+    if (labelNorm === qNorm) return 100;
+    if (labelNorm.startsWith(qNorm)) return 80;
+    if (labelNorm.includes(qNorm)) return 60;
+    if (entry.search?.includes(qNorm)) return 40;
+    return 0;
+  }
+
+  function kindLabel(kind) {
+    switch (kind) {
+      case 'creature': return 'Creature';
+      case 'equipment': return 'Equipment';
+      case 'inventoryCategory': return 'Inventory';
+      case 'inventoryItem': return 'Item';
+      case 'map': return 'Map';
+      case 'region': return 'Region';
+      default: return 'Result';
+    }
+  }
+
+  function search(query) {
+    const qNorm = cyclopediaNormalizeSearchText(query);
+    if (!qNorm || qNorm.length < 2) {
+      return { query: qNorm, results: [] };
+    }
+
+    if (!baseEntries) baseEntries = buildBaseEntries();
+
+    const scored = [];
+    for (const entry of baseEntries) {
+      const score = scoreEntry(entry, qNorm);
+      if (score > 0) scored.push({ entry, score });
+    }
+
+    scored.sort((a, b) => (b.score - a.score) || a.entry.label.localeCompare(b.entry.label));
+    const results = scored.slice(0, MAX_RESULTS).map(({ entry }) => ({
+      kind: entry.kind,
+      kindLabel: kindLabel(entry.kind),
+      label: entry.label,
+      subtitle: entry.subtitle || '',
+      target: entry.target
+    }));
+
+    // Metadata: if query matches a map/region name, also include creatures present there
+    try {
+      const extraCreatureKeys = new Set(results.filter(r => r.kind === 'creature').map(r => cyclopediaNormalizeSearchText(r.label)));
+      const roomNameMap = globalThis.state?.utils?.ROOM_NAME || {};
+      const regions = safeGetRegions();
+
+      const matchedRoomIds = Object.entries(roomNameMap)
+        .filter(([, name]) => cyclopediaNormalizeSearchText(name).includes(qNorm))
+        .slice(0, 3)
+        .map(([roomId]) => roomId);
+
+      const matchedRegionIds = regions
+        .filter((r) => cyclopediaNormalizeSearchText(getRegionDisplayName(r.id)).includes(qNorm))
+        .slice(0, 2)
+        .map((r) => r.id);
+
+      if (matchedRoomIds.length > 0 || matchedRegionIds.length > 0) {
+        const idx = ensureRoomCreatureIndex();
+        const creatureCounts = new Map(); // name -> count
+        const roomContext = new Map(); // name -> one mapName
+
+        matchedRoomIds.forEach((roomId) => {
+          const set = idx.get(roomId);
+          if (!set) return;
+          const mapName = roomNameMap[roomId] || roomId;
+          for (const creatureName of set) {
+            creatureCounts.set(creatureName, (creatureCounts.get(creatureName) || 0) + 1);
+            if (!roomContext.has(creatureName)) roomContext.set(creatureName, mapName);
+          }
+        });
+
+        matchedRegionIds.forEach((regionId) => {
+          const region = regions.find((r) => r.id === regionId);
+          if (!region?.rooms) return;
+          region.rooms.slice(0, 30).forEach((room) => {
+            const roomId = room?.id;
+            if (!roomId) return;
+            const set = idx.get(roomId);
+            if (!set) return;
+            const mapName = roomNameMap[roomId] || roomId;
+            for (const creatureName of set) {
+              creatureCounts.set(creatureName, (creatureCounts.get(creatureName) || 0) + 1);
+              if (!roomContext.has(creatureName)) roomContext.set(creatureName, mapName);
+            }
+          });
+        });
+
+        const extra = Array.from(creatureCounts.entries())
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, MAX_META_CREATURES)
+          .map(([name]) => ({ name, where: roomContext.get(name) }));
+
+        extra.forEach(({ name, where }) => {
+          const key = cyclopediaNormalizeSearchText(name);
+          if (extraCreatureKeys.has(key)) return;
+          results.push({
+            kind: 'creature',
+            kindLabel: 'Creature',
+            label: name,
+            subtitle: where ? `Spawns in: ${where}` : 'Spawns in matching map/region',
+            target: { type: 'creature', name }
+          });
+          extraCreatureKeys.add(key);
+        });
+      }
+    } catch (error) {
+      // Best-effort only
+      console.warn('[Cyclopedia] HomeSearch: metadata expansion failed:', error);
+    }
+
+    // Ability-text matching (expensive): only try for longer queries
+    if (qNorm.length >= 3) {
+      try {
+        const existingCreatureKeys = new Set(
+          results.filter(r => r.target?.type === 'creature').map(r => cyclopediaNormalizeSearchText(r.label))
+        );
+
+        const creatureEntries = baseEntries.filter(e => e.kind === 'creature');
+        for (const entry of creatureEntries) {
+          if (results.length >= MAX_RESULTS) break;
+
+          // Skip if already matched by name/role
+          if (entry.search && entry.search.includes(qNorm)) continue;
+
+          const nameKey = cyclopediaNormalizeSearchText(entry.label);
+          if (existingCreatureKeys.has(nameKey)) continue;
+
+          // Prefer cached text. If not cached yet, skip for now — background indexer will populate and UI will refresh.
+          const cache = ensureCreatureAbilityTextCache();
+          const cached = cache.get(nameKey);
+          const abilityText = getAbilityTextFromCacheValue(cached);
+          if (abilityText && abilityText.includes(qNorm)) {
+            results.push({
+              kind: 'creature',
+              kindLabel: 'Ability',
+              label: entry.label,
+              subtitle: snippetAroundMatch(abilityText, qNorm) || 'Ability match',
+              target: { type: 'creature', name: entry.label }
+            });
+            existingCreatureKeys.add(nameKey);
+          }
+        }
+      } catch (error) {
+        console.warn('[Cyclopedia] HomeSearch: ability matching failed:', error);
+      }
+    }
+
+    return { query: qNorm, results };
+  }
+
+  function reset() {
+    baseEntries = null;
+    roomCreatureIndex = null;
+    creatureAbilityTextCache = null;
+    abilityIndexPromise = null;
+    try {
+      abilityIndexState.running = false;
+      abilityIndexState.queue = [];
+      abilityIndexState.done = 0;
+      abilityIndexState.total = 0;
+      if (abilityIndexState.tickTimer) clearTimeout(abilityIndexState.tickTimer);
+      abilityIndexState.tickTimer = null;
+      abilityIndexState.listeners.clear();
+    } catch {
+      // ignore
+    }
+  }
+
+  return {
+    search,
+    reset,
+    // Ability text indexing helpers (used by Home search UI)
+    ensureAbilityIndexReady,
+    isAbilityIndexReady,
+    // Existing exports (kept for compatibility/debug)
+    startAbilityIndexing,
+    getAbilityIndexProgress,
+    subscribeAbilityIndex
+  };
+})();
 
 // =======================
 // 2. Global State & Configuration
@@ -1992,8 +2853,8 @@ function removeCyclopediaFromMenus() {
   // Process all cyclopedia elements
   document.querySelectorAll('div, li').forEach(el => {
     if (el.textContent.trim().toLowerCase() === 'cyclopedia') {
-      // Skip elements that should be excluded
-      if (el.hasAttribute('data-cyclopedia-exclude')) {
+      // Skip elements that should be excluded (e.g., from VIP List)
+      if (el.hasAttribute('data-cyclopedia-exclude') || el.hasAttribute('data-vip-list-item')) {
         return;
       }
       
@@ -2193,6 +3054,84 @@ function showDeleteConfirmationModal(runType, runData, onConfirm) {
   cancelButton.focus();
 }
 
+// Helper function to check if a map is a raid (comprehensive check like Raid_Hunter)
+function isMapRaid(mapId) {
+  if (!mapId) return false;
+  
+  try {
+    // Method 1: Check ROOMS data directly
+    const roomData = globalThis.state?.utils?.ROOMS?.[mapId];
+    if (roomData?.raid === true) {
+      return true;
+    }
+    
+    // Method 2: Check REGIONS data (finds all raid maps including events)
+    const regions = globalThis.state?.utils?.REGIONS;
+    if (regions && Array.isArray(regions)) {
+      for (const region of regions) {
+        if (region.rooms && Array.isArray(region.rooms)) {
+          const room = region.rooms.find(r => r.id === mapId);
+          if (room && room.raid === true) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    // Method 3: Check currently active raids (fallback for edge cases)
+    const raidState = globalThis.state?.raids?.getSnapshot?.();
+    const activeRaids = raidState?.context?.list || [];
+    if (activeRaids.some(raid => raid.roomId === mapId)) {
+      return true;
+    }
+  } catch (error) {
+    console.warn('[Cyclopedia] Error checking if map is raid:', error);
+  }
+  
+  return false;
+}
+
+// Static raid list from Raid_Hunter.js (maps that should be included in statistics)
+// Dynamic events (raids not in this list) should be excluded from statistics
+const STATIC_RAID_EVENTS = [
+  'Rat Plague',
+  'Buzzing Madness', 
+  'Monastery Catacombs',
+  'Ghostlands Boneyard',
+  'Permafrosted Hole',
+  'Jammed Mailbox',
+  'Frosted Bunker',
+  'Hedge Maze Trap',
+  'Tower of Whitewatch (Shield)',
+  'Tower of Whitewatch (Helmet)',
+  'Tower of Whitewatch (Armor)',
+  'Orcish Barricade',
+  'Poacher Cave (Bear)',
+  'Poacher Cave (Wolf)',
+  'Dwarven Bank Heist',
+  'An Arcanist Ritual'
+];
+
+// Helper function to check if a map is a dynamic event (raid but not in static list)
+// Dynamic events should be excluded from statistics
+function isDynamicEventMap(mapId) {
+  if (!mapId) return false;
+  
+  // First check if it's a raid
+  if (!isMapRaid(mapId)) {
+    return false;
+  }
+  
+  // Get the map name
+  const mapName = globalThis.state?.utils?.ROOM_NAME?.[mapId];
+  if (!mapName) {
+    return false;
+  }
+  
+  // If it's a raid but NOT in the static list, it's a dynamic event
+  return !STATIC_RAID_EVENTS.includes(mapName);
+}
+
 function createBox({
   title, items, extraBoxStyles = {}, type = 'creature', selectedCreature, selectedEquipment, selectedInventory,
   setSelectedCreature, setSelectedEquipment, setSelectedInventory, updateRightCol, clearAllSelections = null, mapIds = null, regionIds = null
@@ -2259,6 +3198,44 @@ function createBox({
       }
       
       const item = DOMUtils.createListItem(name, FONT_CONSTANTS.SIZES.BODY, isOwned, isPerfect, isT5, hasShiny);
+      
+      // Add raid icon for static raids, or event icon for dynamic event maps
+      if (type === 'map') {
+        const mapIndex = items.indexOf(name);
+        const mapId = mapIds?.[mapIndex];
+        if (mapId && isMapRaid(mapId)) {
+          // Find the contentContainer (first child div created by createListItem)
+          const contentContainer = item.firstElementChild;
+          if (contentContainer && contentContainer.tagName === 'DIV') {
+            // Check if it's a dynamic event or static raid
+            const isDynamicEvent = isDynamicEventMap(mapId);
+            
+            // Create icon
+            const icon = document.createElement('img');
+            if (isDynamicEvent) {
+              // Use plinko icon for dynamic event maps
+              icon.src = 'https://bestiaryarena.com/assets/icons/plinko.png';
+              icon.alt = 'event';
+              icon.title = 'Event map';
+            } else {
+              // Use raid icon for static raids
+              icon.src = 'https://bestiaryarena.com/assets/icons/raid.png';
+              icon.alt = 'raid';
+              icon.title = 'Raid map';
+            }
+            icon.style.width = '11px';
+            icon.style.height = '11px';
+            icon.style.flexShrink = '0';
+            // Insert before the text span (or any existing icons)
+            const textSpan = contentContainer.querySelector('span');
+            if (textSpan) {
+              contentContainer.insertBefore(icon, textSpan);
+            } else {
+              contentContainer.appendChild(icon);
+            }
+          }
+        }
+      }
       
       const clickHandler = () => {
         if (clearAllSelections) {
@@ -2811,7 +3788,7 @@ function createStartPageManager() {
       const container = document.createElement('div');
       Object.assign(container.style, {
         display: 'flex', flexDirection: 'column', width: '100%', height: '100%',
-        padding: '20px', boxSizing: 'border-box', overflowY: 'scroll'
+        padding: '20px 0px', boxSizing: 'border-box', overflowY: 'scroll'
       });
       return container;
     }
@@ -2899,12 +3876,20 @@ function createStartPageManager() {
       const leftCol = DOMUtils.createColumn(START_PAGE_CONFIG.COLUMN_WIDTHS.LEFT, renderCyclopediaWelcomeColumn(playerName));
         mainFlexRow.appendChild(leftCol);
         
-      const middleCol = DOMUtils.createColumn(START_PAGE_CONFIG.COLUMN_WIDTHS.MIDDLE, renderCyclopediaPlayerInfo(profileData));
-        Object.assign(middleCol.style, { justifyContent: 'center', padding: '0 12px' });
-        mainFlexRow.appendChild(middleCol);
-        
-        const rightCol = renderDailyContextColumn();
-        mainFlexRow.appendChild(rightCol);
+      const middleCol = DOMUtils.createColumn(
+        START_PAGE_CONFIG.COLUMN_WIDTHS.MIDDLE,
+        renderCyclopediaSearchColumn()
+      );
+      Object.assign(middleCol.style, { justifyContent: 'center', padding: '0 12px' });
+      mainFlexRow.appendChild(middleCol);
+      
+      // Move the old middle column content (Player information) into the right column
+      const rightCol = DOMUtils.createColumn(
+        START_PAGE_CONFIG.COLUMN_WIDTHS.RIGHT,
+        renderCyclopediaPlayerInfo(profileData)
+      );
+      Object.assign(rightCol.style, { justifyContent: 'center', padding: '0 12px' });
+      mainFlexRow.appendChild(rightCol);
         
         this.container.appendChild(mainFlexRow);
     }
@@ -8294,7 +9279,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
       // Column 3: Floors
       const floorsCol = document.createElement('div');
       floorsCol.style.flex = '1 1 0';
-      floorsCol.style.maxWidth = '160px';
+      floorsCol.style.maxWidth = '180px';
       floorsCol.style.display = 'flex';
       floorsCol.style.flexDirection = 'column';
       floorsCol.style.padding = '10px';
@@ -8543,13 +9528,25 @@ async function fetchWithDeduplication(url, key, priority = 0) {
               const timeText = document.createElement('span');
               console.log(`[Cyclopedia] Speedrun run ${i + 1} ticks: ${run.time} -> ${formatLocalRunTime(run.time)}`);
               
-              // Check if this run is lower than "Your Best" and add warning icon
+              // Check if this run is invalid (lower than "Your Best" OR has level 1 creatures OR has empty pieces)
               const yourTicks = currentYourRooms?.[selectedMap]?.ticks || 0;
-              if (yourTicks > 0 && run.time < yourTicks) {
+              const isTimeInvalid = yourTicks > 0 && run.time < yourTicks;
+              
+              // Check if any creature in the setup has level 1
+              const hasLevel1Creature = run.setup && run.setup.pieces && run.setup.pieces.some(piece => piece.level === 1);
+              
+              // Check if run has setup but no pieces (invalid run)
+              const hasEmptyPieces = run.setup && run.setup.pieces && run.setup.pieces.length === 0;
+              
+              if (isTimeInvalid || hasLevel1Creature || hasEmptyPieces) {
                 // Create warning icon separately for left alignment
                 const warningIcon = document.createElement('span');
                 warningIcon.innerHTML = '⚠️';
-                warningIcon.title = 'This run might be invalid';
+                const reasons = [];
+                if (isTimeInvalid) reasons.push('faster than your best time');
+                if (hasLevel1Creature) reasons.push('has level 1 creatures');
+                if (hasEmptyPieces) reasons.push('no board pieces');
+                warningIcon.title = `This run might be invalid (${reasons.join(', ')})`;
                 warningIcon.style.cursor = 'help';
                 warningIcon.style.position = 'absolute';
                 warningIcon.style.left = '1px';
@@ -8567,7 +9564,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 
                 // Make the entire row red
                 row.style.color = '#ff6b6b';
-                console.log(`[Cyclopedia] Added warning icon for speedrun run ${i + 1}: ${run.time} < ${yourTicks}`);
+                console.log(`[Cyclopedia] Added warning icon for speedrun run ${i + 1}: time invalid=${isTimeInvalid} (${run.time} < ${yourTicks}), hasLevel1=${hasLevel1Creature}, hasEmptyPieces=${hasEmptyPieces}`);
               } else {
                 timeText.textContent = formatLocalRunTime(run.time);
                 timeCell.appendChild(timeText);
@@ -8588,6 +9585,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             copyCell.style.fontSize = '14px';
             copyCell.innerHTML = '🔗';
             copyCell.title = 'Copy $replay command';
+            
             if (run.seed) {
               // Add click animation styles
               copyCell.style.transition = 'all 0.1s ease';
@@ -8656,6 +9654,10 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 
                 replayData.region = regionName;
                 replayData.map = mapName;
+                
+                // Always add floor (default to 0 if not available)
+                replayData.floor = (run.floor !== undefined && run.floor !== null) ? run.floor : 0;
+                console.log('[Cyclopedia] Added floor to replay data:', replayData.floor);
                 
                 // Check if we have stored board setup data
                 if (run.setup && run.setup.pieces && run.setup.pieces.length > 0) {
@@ -8871,7 +9873,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
       const floorsTableCol = document.createElement('div');
       floorsTableCol.setAttribute('data-table-type', 'floors');
       floorsTableCol.style.flex = '1 1 0';
-      floorsTableCol.style.maxWidth = '160px';
+      floorsTableCol.style.maxWidth = '180px';
       floorsTableCol.style.display = 'flex';
       floorsTableCol.style.flexDirection = 'column';
       floorsTableCol.style.padding = '10px';
@@ -9060,9 +10062,47 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             floorCell.style.alignItems = 'center';
             floorCell.style.justifyContent = 'center';
             floorCell.style.gap = '4px';
+            floorCell.style.position = 'relative';
+            
+            // Check if any creature in the setup has level 1
+            const hasLevel1Creature = run.setup && run.setup.pieces && run.setup.pieces.some(piece => piece.level === 1);
+            
+            // Check if run has setup but no pieces (invalid run)
+            const hasEmptyPieces = run.setup && run.setup.pieces && run.setup.pieces.length === 0;
+            
             if (run.floor !== undefined && run.floor !== null) {
-              floorCell.textContent = run.floor;
+              const floorText = document.createElement('span');
+              floorText.textContent = run.floor;
               console.log(`[Cyclopedia] Floor run ${i + 1} floor: ${run.floor}`);
+              
+              if (hasLevel1Creature || hasEmptyPieces) {
+                // Create warning icon separately for left alignment
+                const warningIcon = document.createElement('span');
+                warningIcon.innerHTML = '⚠️';
+                const reasons = [];
+                if (hasLevel1Creature) reasons.push('has level 1 creatures');
+                if (hasEmptyPieces) reasons.push('no board pieces');
+                warningIcon.title = `This run might be invalid (${reasons.join(', ')})`;
+                warningIcon.style.cursor = 'help';
+                warningIcon.style.position = 'absolute';
+                warningIcon.style.left = '1px';
+                warningIcon.style.fontSize = '10px';
+                warningIcon.style.zIndex = '1';
+                
+                // Create floor text centered with left margin to avoid overlap
+                floorText.style.textAlign = 'center';
+                floorText.style.flex = '1';
+                floorText.style.marginLeft = '12px';
+                
+                floorCell.appendChild(warningIcon);
+                floorCell.appendChild(floorText);
+                
+                // Make the entire row red
+                row.style.color = '#ff6b6b';
+                console.log(`[Cyclopedia] Added warning icon for floor run ${i + 1}: hasLevel1=${hasLevel1Creature}, hasEmptyPieces=${hasEmptyPieces}`);
+              } else {
+                floorCell.appendChild(floorText);
+              }
             } else {
               floorCell.textContent = 'N/A';
               console.log(`[Cyclopedia] Floor run ${i + 1} has no floor property`);
@@ -9095,6 +10135,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             copyCell.style.fontSize = '14px';
             copyCell.innerHTML = '🔗';
             copyCell.title = 'Copy $replay command';
+            
             if (run.seed) {
               // Add click animation styles
               copyCell.style.transition = 'all 0.1s ease';
@@ -9163,6 +10204,10 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 
                 replayData.region = regionName;
                 replayData.map = mapName;
+                
+                // Always add floor (default to 0 if not available)
+                replayData.floor = (run.floor !== undefined && run.floor !== null) ? run.floor : 0;
+                console.log('[Cyclopedia] Added floor to replay data:', replayData.floor);
                 
                 // Check if we have stored board setup data
                 if (run.setup && run.setup.pieces && run.setup.pieces.length > 0) {
@@ -9582,19 +10627,28 @@ async function fetchWithDeduplication(url, key, priority = 0) {
               const timeText = document.createElement('span');
               console.log(`[Cyclopedia] Rank run ${i + 1} ticks: ${run.time} -> ${formatLocalRunTime(run.time)}`);
               
-              // Check if this run is invalid (either faster than your best time OR worse rank than your best)
+              // Check if this run is invalid (either faster than your best time OR worse rank than your best OR has level 1 creatures OR has empty pieces)
               const yourTicks = currentYourRooms?.[selectedMap]?.ticks || 0;
               const yourBestRank = currentYourRooms?.[selectedMap]?.rank || 0;
               const isTimeInvalid = yourTicks > 0 && run.time < yourTicks;
               const isRankInvalid = yourBestRank > 0 && run.points > yourBestRank;
               
-              if (isTimeInvalid || isRankInvalid) {
+              // Check if any creature in the setup has level 1
+              const hasLevel1Creature = run.setup && run.setup.pieces && run.setup.pieces.some(piece => piece.level === 1);
+              
+              // Check if run has setup but no pieces (invalid run)
+              const hasEmptyPieces = run.setup && run.setup.pieces && run.setup.pieces.length === 0;
+              
+              if (isTimeInvalid || isRankInvalid || hasLevel1Creature || hasEmptyPieces) {
                 // Create warning icon separately for left alignment
                 const warningIcon = document.createElement('span');
                 warningIcon.innerHTML = '⚠️';
-                warningIcon.title = isTimeInvalid && isRankInvalid ? 'This run might be invalid (both time and rank)' : 
-                                   isTimeInvalid ? 'This run might be invalid (faster than your best time)' : 
-                                   'This run might be invalid (worse rank than your best)';
+                const reasons = [];
+                if (isTimeInvalid) reasons.push('faster than your best time');
+                if (isRankInvalid) reasons.push('worse rank than your best');
+                if (hasLevel1Creature) reasons.push('has level 1 creatures');
+                if (hasEmptyPieces) reasons.push('no board pieces');
+                warningIcon.title = `This run might be invalid (${reasons.join(', ')})`;
                 warningIcon.style.cursor = 'help';
                 warningIcon.style.position = 'absolute';
                 warningIcon.style.left = '1px';
@@ -9613,7 +10667,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 
                 // Make the entire row red
                 row.style.color = '#ff6b6b';
-                console.log(`[Cyclopedia] Added warning icon for rank run ${i + 1}: time invalid=${isTimeInvalid} (${run.time} < ${yourTicks}), rank invalid=${isRankInvalid} (${run.points} > ${yourBestRank})`);
+                console.log(`[Cyclopedia] Added warning icon for rank run ${i + 1}: time invalid=${isTimeInvalid} (${run.time} < ${yourTicks}), rank invalid=${isRankInvalid} (${run.points} > ${yourBestRank}), hasLevel1=${hasLevel1Creature}, hasEmptyPieces=${hasEmptyPieces}`);
               } else {
                 const timeValue = formatLocalRunTime(run.time).replace(/\s*ticks?\s*/i, '');
                 timeText.textContent = timeValue;
@@ -9635,6 +10689,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             copyCell.style.fontSize = '14px';
             copyCell.innerHTML = '🔗';
             copyCell.title = 'Copy $replay command';
+            
             if (run.seed) {
               // Add click animation styles
               copyCell.style.transition = 'all 0.1s ease';
@@ -9703,6 +10758,10 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 
                 replayData.region = regionName;
                 replayData.map = mapName;
+                
+                // Always add floor (default to 0 if not available)
+                replayData.floor = (run.floor !== undefined && run.floor !== null) ? run.floor : 0;
+                console.log('[Cyclopedia] Added floor to replay data:', replayData.floor);
                 
                 // Check if we have stored board setup data
                 if (run.setup && run.setup.pieces && run.setup.pieces.length > 0) {
@@ -10376,6 +11435,696 @@ async function fetchWithDeduplication(url, key, priority = 0) {
       return creaturesContainer;
     }
 
+    // Helper function to create a compact stat column (like Statistics section)
+    function createCompactStatColumn(iconSrc, iconAlt, mapId, mapData, leaderboardData) {
+      const statCol = document.createElement('div');
+      statCol.style.display = 'flex';
+      statCol.style.flexDirection = 'column';
+      statCol.style.alignItems = 'center';
+      statCol.style.justifyContent = 'center';
+      statCol.style.padding = '4px';
+      statCol.style.minWidth = '80px';
+      statCol.style.maxWidth = '100px';
+      statCol.style.fontSize = '9px';
+      statCol.style.fontFamily = "'Trebuchet MS', 'Arial Black', Arial, sans-serif";
+      statCol.style.textAlign = 'center';
+      
+      // Icon
+      const icon = document.createElement('img');
+      icon.src = iconSrc;
+      icon.alt = iconAlt;
+      icon.style.width = '12px';
+      icon.style.height = '12px';
+      icon.style.marginBottom = '4px';
+      statCol.appendChild(icon);
+      
+      // Content container
+      const content = document.createElement('div');
+      content.style.display = 'flex';
+      content.style.flexDirection = 'column';
+      content.style.gap = '2px';
+      content.style.width = '100%';
+      
+      // Determine stat type and get data
+      const isSpeedrun = iconAlt === 'Speed';
+      const isRankPoints = iconAlt === 'Grade';
+      const isFloors = iconAlt === 'Floors';
+      
+      if (isSpeedrun) {
+        const yourTicks = mapData?.ticks || 0;
+        const bestTicks = leaderboardData?.best?.[mapId]?.ticks || 0;
+        const bestPlayer = leaderboardData?.best?.[mapId]?.userName || '';
+        
+        // Check if personal equals world record
+        const isPersonalWR = yourTicks > 0 && bestTicks > 0 && yourTicks === bestTicks;
+        
+        if (bestTicks > 0) {
+          const wrDiv = document.createElement('div');
+          wrDiv.style.color = '#ff8';
+          wrDiv.style.fontWeight = 'bold';
+          wrDiv.style.fontSize = '8px';
+          wrDiv.textContent = 'WR';
+          content.appendChild(wrDiv);
+          
+          const wrValue = document.createElement('div');
+          wrValue.style.color = '#fff';
+          wrValue.style.fontSize = '9px';
+          wrValue.textContent = `${bestTicks}`;
+          content.appendChild(wrValue);
+        }
+        
+        if (yourTicks > 0) {
+          const yourDiv = document.createElement('div');
+          yourDiv.style.color = '#8f8';
+          yourDiv.style.fontWeight = 'bold';
+          yourDiv.style.fontSize = '8px';
+          yourDiv.textContent = 'You';
+          content.appendChild(yourDiv);
+          
+          const yourValue = document.createElement('div');
+          yourValue.style.color = isPersonalWR ? '#8f8' : '#ccc';
+          yourValue.style.fontSize = '9px';
+          yourValue.style.fontWeight = isPersonalWR ? 'bold' : 'normal';
+          yourValue.style.textDecoration = isPersonalWR ? 'underline' : 'none';
+          yourValue.textContent = `${yourTicks}`;
+          content.appendChild(yourValue);
+        }
+        
+        if (bestTicks === 0 && yourTicks === 0) {
+          const noData = document.createElement('div');
+          noData.style.color = '#666';
+          noData.style.fontSize = '8px';
+          noData.textContent = '—';
+          content.appendChild(noData);
+        }
+      } else if (isRankPoints) {
+        const yourRank = mapData?.rank || 0;
+        const yourRankTicks = mapData?.rankTicks;
+        const bestRank = leaderboardData?.roomsHighscores?.rank?.[mapId]?.rank || 0;
+        const bestRankTicks = leaderboardData?.roomsHighscores?.rank?.[mapId]?.ticks;
+        const bestPlayer = leaderboardData?.roomsHighscores?.rank?.[mapId]?.userName || '';
+        
+        // Check if personal rank equals world record (excluding ticks)
+        const isPersonalWR = yourRank > 0 && bestRank > 0 && yourRank === bestRank;
+        
+        if (bestRank > 0) {
+          const wrDiv = document.createElement('div');
+          wrDiv.style.color = '#ff8';
+          wrDiv.style.fontWeight = 'bold';
+          wrDiv.style.fontSize = '8px';
+          wrDiv.textContent = 'WR';
+          content.appendChild(wrDiv);
+          
+          const wrValue = document.createElement('div');
+          wrValue.style.color = '#fff';
+          wrValue.style.fontSize = '9px';
+          wrValue.innerHTML = `${bestRank}${bestRankTicks !== undefined && bestRankTicks !== null ? ` <i style="color: #aaa; font-size: 7px;">(${bestRankTicks})</i>` : ''}`;
+          content.appendChild(wrValue);
+        }
+        
+        if (yourRank > 0) {
+          const yourDiv = document.createElement('div');
+          yourDiv.style.color = '#8f8';
+          yourDiv.style.fontWeight = 'bold';
+          yourDiv.style.fontSize = '8px';
+          yourDiv.textContent = 'You';
+          content.appendChild(yourDiv);
+          
+          const yourValue = document.createElement('div');
+          yourValue.style.color = isPersonalWR ? '#8f8' : '#ccc';
+          yourValue.style.fontSize = '9px';
+          yourValue.style.fontWeight = isPersonalWR ? 'bold' : 'normal';
+          yourValue.style.textDecoration = isPersonalWR ? 'underline' : 'none';
+          yourValue.innerHTML = `${yourRank}${yourRankTicks !== undefined && yourRankTicks !== null ? ` <i style="color: #aaa; font-size: 7px;">(${yourRankTicks})</i>` : ''}`;
+          content.appendChild(yourValue);
+        }
+        
+        if (bestRank === 0 && yourRank === 0) {
+          const noData = document.createElement('div');
+          noData.style.color = '#666';
+          noData.style.fontSize = '8px';
+          noData.textContent = '—';
+          content.appendChild(noData);
+        }
+      } else if (isFloors) {
+        const yourRoom = mapData;
+        const { floor: yourFloor, floorTicks: yourFloorTicks } = normalizeUserFloorData(yourRoom);
+        
+        // Get best floor data using normalizeBestFloorData
+        let bestFloor = 0;
+        let bestFloorTicks = null;
+        if (leaderboardData) {
+          const bestFloorData = normalizeBestFloorData(mapId, leaderboardData.roomsHighscores, leaderboardData.best);
+          bestFloor = bestFloorData.floor !== undefined && bestFloorData.floor !== null ? bestFloorData.floor : 0;
+          bestFloorTicks = bestFloorData.floorTicks;
+        }
+        
+        if (bestFloorTicks > 0 || bestFloor > 0) {
+          const wrDiv = document.createElement('div');
+          wrDiv.style.color = '#ff8';
+          wrDiv.style.fontWeight = 'bold';
+          wrDiv.style.fontSize = '8px';
+          wrDiv.textContent = 'WR';
+          content.appendChild(wrDiv);
+          
+          const wrValue = document.createElement('div');
+          wrValue.style.color = '#fff';
+          wrValue.style.fontSize = '9px';
+          wrValue.innerHTML = `Floor ${bestFloor}${bestFloorTicks !== undefined && bestFloorTicks !== null ? ` <i style="color: #aaa; font-size: 7px;">(${bestFloorTicks})</i>` : ''}`;
+          content.appendChild(wrValue);
+        }
+        
+        if (yourFloor !== undefined && yourFloor !== null) {
+          const yourDiv = document.createElement('div');
+          yourDiv.style.color = '#8f8';
+          yourDiv.style.fontWeight = 'bold';
+          yourDiv.style.fontSize = '8px';
+          yourDiv.textContent = 'You';
+          content.appendChild(yourDiv);
+          
+          // Check if floor is 15 (max floor)
+          const isMaxFloor = yourFloor === 15;
+          
+          const yourValue = document.createElement('div');
+          yourValue.style.color = isMaxFloor ? '#8f8' : '#ccc';
+          yourValue.style.fontSize = '9px';
+          yourValue.style.fontWeight = isMaxFloor ? 'bold' : 'normal';
+          yourValue.style.textDecoration = isMaxFloor ? 'underline' : 'none';
+          yourValue.innerHTML = `Floor ${yourFloor}${yourFloorTicks !== undefined && yourFloorTicks !== null ? ` <i style="color: #aaa; font-size: 7px;">(${yourFloorTicks})</i>` : ''}`;
+          content.appendChild(yourValue);
+        }
+        
+        if ((bestFloorTicks === 0 || bestFloor === 0) && (yourFloor === undefined || yourFloor === null)) {
+          const noData = document.createElement('div');
+          noData.style.color = '#666';
+          noData.style.fontSize = '8px';
+          noData.textContent = '—';
+          content.appendChild(noData);
+        }
+      }
+      
+      statCol.appendChild(content);
+      return statCol;
+    }
+
+    // Helper function to create region maps section (shows all maps in a region)
+    function createRegionMapsSection(mapsInRegion, regionId, onMapSelect) {
+      const regionMapsDiv = document.createElement('div');
+      regionMapsDiv.style.padding = '0 20px 20px 20px';
+      regionMapsDiv.style.color = COLOR_CONSTANTS.TEXT;
+      regionMapsDiv.style.width = '100%';
+      regionMapsDiv.style.boxSizing = 'border-box';
+      regionMapsDiv.style.marginBottom = '0';
+      
+      // Region title
+      const regionTitle = document.createElement('h3');
+      const regionName = GAME_DATA.REGION_NAME_MAP[regionId] || regionId;
+      regionTitle.textContent = regionName;
+      regionTitle.style.margin = '0 0 15px 0';
+      regionTitle.style.fontSize = '18px';
+      regionTitle.style.fontWeight = 'bold';
+      regionTitle.style.textAlign = 'center';
+      regionMapsDiv.appendChild(regionTitle);
+      
+      // Maps container (no scroll - parent handles scrolling)
+      const mapsContainer = document.createElement('div');
+      mapsContainer.style.display = 'flex';
+      mapsContainer.style.flexDirection = 'column';
+      mapsContainer.style.gap = '10px';
+      mapsContainer.style.paddingRight = '8px';
+      
+      const playerState = globalThis.state?.player?.getSnapshot?.()?.context;
+      const playerRooms = playerState?.rooms || {};
+      
+      // Filter out dynamic event maps from display
+      const mapsToDisplay = mapsInRegion.filter(map => !isDynamicEventMap(map.id));
+      
+      // Fetch leaderboard data for all maps
+      fetchMapsLeaderboardData().then(leaderboardData => {
+        mapsToDisplay.forEach(map => {
+          const mapItem = document.createElement('div');
+          mapItem.style.display = 'grid';
+          mapItem.style.gridTemplateColumns = '64px 1fr auto auto auto';
+          mapItem.style.alignItems = 'center';
+          mapItem.style.gap = '8px';
+          mapItem.style.padding = '8px';
+          mapItem.style.border = '2px solid #666';
+          mapItem.style.borderRadius = '4px';
+          mapItem.style.cursor = 'pointer';
+          mapItem.style.transition = 'background-color 0.2s';
+          
+          // Check if map is explored
+          const isExplored = playerRooms[map.id] !== undefined;
+          if (!isExplored) {
+            mapItem.style.opacity = '0.6';
+            mapItem.style.filter = 'grayscale(0.7)';
+          }
+          
+          // Thumbnail (Column 1)
+          const thumbnail = document.createElement('img');
+          thumbnail.src = `/assets/room-thumbnails/${map.id}.png`;
+          thumbnail.alt = map.name;
+          thumbnail.className = 'pixelated';
+          thumbnail.style.width = '64px';
+          thumbnail.style.height = '64px';
+          thumbnail.style.objectFit = 'cover';
+          thumbnail.style.border = '1px solid #666';
+          thumbnail.style.borderRadius = '4px';
+          mapItem.appendChild(thumbnail);
+          
+          // Map name (Column 2)
+          const mapName = document.createElement('div');
+          mapName.textContent = map.name;
+          mapName.style.fontSize = '14px';
+          mapName.style.fontWeight = 'bold';
+          mapItem.appendChild(mapName);
+          
+          // Get map data
+          const mapData = isExplored ? playerRooms[map.id] : null;
+          
+          // Speedrun column (Column 3)
+          const speedrunCol = createCompactStatColumn(
+            'https://bestiaryarena.com/assets/icons/speed.png',
+            'Speed',
+            map.id,
+            mapData,
+            leaderboardData
+          );
+          mapItem.appendChild(speedrunCol);
+          
+          // Rank Points column (Column 4)
+          const rankPointsCol = createCompactStatColumn(
+            'https://bestiaryarena.com/assets/icons/grade.png',
+            'Grade',
+            map.id,
+            mapData,
+            leaderboardData
+          );
+          mapItem.appendChild(rankPointsCol);
+          
+          // Floors column (Column 5)
+          const floorsCol = createCompactStatColumn(
+            'https://bestiaryarena.com/assets/icons/floors.png',
+            'Floors',
+            map.id,
+            mapData,
+            leaderboardData
+          );
+          mapItem.appendChild(floorsCol);
+          
+          // Hover effect
+          mapItem.addEventListener('mouseenter', () => {
+            mapItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+          });
+          mapItem.addEventListener('mouseleave', () => {
+            mapItem.style.backgroundColor = 'transparent';
+          });
+          
+          // Click to select map
+          mapItem.addEventListener('click', () => {
+            if (onMapSelect) {
+              onMapSelect(map.id);
+            }
+          });
+          
+          mapsContainer.appendChild(mapItem);
+        });
+      }).catch(error => {
+        console.error('[Cyclopedia] Error fetching leaderboard data for region maps:', error);
+        // Still show maps without leaderboard data
+        mapsToDisplay.forEach(map => {
+          const mapItem = document.createElement('div');
+          mapItem.style.display = 'grid';
+          mapItem.style.gridTemplateColumns = '64px 1fr auto auto auto';
+          mapItem.style.alignItems = 'center';
+          mapItem.style.gap = '8px';
+          mapItem.style.padding = '8px';
+          mapItem.style.border = '2px solid #666';
+          mapItem.style.borderRadius = '4px';
+          mapItem.style.cursor = 'pointer';
+          
+          const isExplored = playerRooms[map.id] !== undefined;
+          if (!isExplored) {
+            mapItem.style.opacity = '0.6';
+            mapItem.style.filter = 'grayscale(0.7)';
+          }
+          
+          const thumbnail = document.createElement('img');
+          thumbnail.src = `/assets/room-thumbnails/${map.id}.png`;
+          thumbnail.alt = map.name;
+          thumbnail.className = 'pixelated';
+          thumbnail.style.width = '64px';
+          thumbnail.style.height = '64px';
+          thumbnail.style.objectFit = 'cover';
+          thumbnail.style.border = '1px solid #666';
+          thumbnail.style.borderRadius = '4px';
+          mapItem.appendChild(thumbnail);
+          
+          const mapName = document.createElement('div');
+          mapName.textContent = map.name;
+          mapName.style.fontSize = '14px';
+          mapName.style.fontWeight = 'bold';
+          mapItem.appendChild(mapName);
+          
+          const mapData = isExplored ? playerRooms[map.id] : null;
+          const speedrunCol = createCompactStatColumn('https://bestiaryarena.com/assets/icons/speed.png', 'Speed', map.id, mapData, null);
+          const rankPointsCol = createCompactStatColumn('https://bestiaryarena.com/assets/icons/grade.png', 'Grade', map.id, mapData, null);
+          const floorsCol = createCompactStatColumn('https://bestiaryarena.com/assets/icons/floors.png', 'Floors', map.id, mapData, null);
+          mapItem.appendChild(speedrunCol);
+          mapItem.appendChild(rankPointsCol);
+          mapItem.appendChild(floorsCol);
+          
+          mapItem.addEventListener('click', () => {
+            if (onMapSelect) {
+              onMapSelect(map.id);
+            }
+          });
+          
+          mapsContainer.appendChild(mapItem);
+        });
+      });
+      
+      regionMapsDiv.appendChild(mapsContainer);
+      return regionMapsDiv;
+    }
+
+    // Helper function to create region statistics section
+    function createRegionStatisticsSection(regionId, mapsInRegion) {
+      const statsContainer = document.createElement('div');
+      statsContainer.style.display = 'flex';
+      statsContainer.style.flexDirection = 'column';
+      statsContainer.style.width = '100%';
+      statsContainer.style.height = '100%';
+      statsContainer.style.boxSizing = 'border-box';
+      statsContainer.style.padding = '15px';
+      
+      // Get player state
+      const playerState = globalThis.state?.player?.getSnapshot?.()?.context;
+      const playerRooms = playerState?.rooms || {};
+      const roomsArray = globalThis.state?.utils?.ROOMS || [];
+      
+      // Calculate statistics
+      // Filter out raid maps and dynamic event maps from the count
+      // Dynamic events (raids not in STATIC_RAID_EVENTS) should be excluded from statistics
+      const nonRaidMaps = mapsInRegion.filter(map => !isMapRaid(map.id));
+      const staticRaidMaps = mapsInRegion.filter(map => isMapRaid(map.id) && !isDynamicEventMap(map.id));
+      const dynamicEventMaps = mapsInRegion.filter(map => isDynamicEventMap(map.id));
+      const raidMaps = mapsInRegion.filter(map => isMapRaid(map.id)); // All raids (static + dynamic) for display
+      const totalNonRaidMaps = nonRaidMaps.length;
+      const totalRaidMaps = staticRaidMaps.length; // Only count static raids for statistics
+      
+      let exploredCount = 0;
+      let exploredRaidsCount = 0;
+      let totalRankPoints = 0;
+      let totalRaidRankPoints = 0;
+      let maxRankPoints = 0;
+      let maxRaidRankPoints = 0;
+      let totalFloors = 0;
+      let totalRaidFloors = 0;
+      let maxFloors = 0;
+      let maxRaidFloors = 0;
+      let totalTicks = 0; // Personal total ticks (non-raid)
+      let totalRaidTicks = 0; // Personal total ticks (raids)
+      let totalWRTicks = 0; // World record total ticks (non-raid)
+      let totalWRRaidTicks = 0; // World record total ticks (raids)
+      
+      // Only count non-raid maps for explored count and rank points/floors
+      nonRaidMaps.forEach(map => {
+        const isExplored = playerRooms[map.id] !== undefined;
+        if (isExplored) {
+          exploredCount++;
+          
+          const mapData = playerRooms[map.id];
+          if (mapData.rank !== undefined && mapData.rank !== null) {
+            totalRankPoints += mapData.rank;
+          }
+          if (mapData.floor !== undefined && mapData.floor !== null) {
+            totalFloors += mapData.floor;
+          }
+          if (mapData.ticks !== undefined && mapData.ticks !== null) {
+            totalTicks += mapData.ticks;
+          }
+        }
+      });
+      
+      // Count explored static raids and their rank points/floors (exclude dynamic events)
+      staticRaidMaps.forEach(map => {
+        const isExplored = playerRooms[map.id] !== undefined;
+        if (isExplored) {
+          exploredRaidsCount++;
+          
+          const mapData = playerRooms[map.id];
+          if (mapData.rank !== undefined && mapData.rank !== null) {
+            totalRaidRankPoints += mapData.rank;
+          }
+          if (mapData.floor !== undefined && mapData.floor !== null) {
+            totalRaidFloors += mapData.floor;
+          }
+          if (mapData.ticks !== undefined && mapData.ticks !== null) {
+            totalRaidTicks += mapData.ticks;
+          }
+        }
+      });
+      
+      // Calculate max possible values for non-raid maps
+      nonRaidMaps.forEach(map => {
+        // Find room data from ROOMS array (ROOMS is an array, not an object)
+        const roomData = roomsArray.find(room => room.id === map.id);
+        if (roomData && roomData.maxTeamSize) {
+          // Calculate max rank points = (2 * maxTeamSize) - 1 per map
+          const mapMaxRankPoints = (2 * roomData.maxTeamSize) - 1;
+          maxRankPoints += mapMaxRankPoints;
+        } else {
+          // Fallback: if no room data found, assume maxTeamSize of 1
+          maxRankPoints += 1; // (2 * 1) - 1 = 1
+        }
+        
+        // Max floor is always 15 per map
+        maxFloors += 15;
+      });
+      
+      // Calculate max possible values for static raid maps (exclude dynamic events)
+      staticRaidMaps.forEach(map => {
+        // Find room data from ROOMS array (ROOMS is an array, not an object)
+        const roomData = roomsArray.find(room => room.id === map.id);
+        if (roomData && roomData.maxTeamSize) {
+          // Calculate max rank points = (2 * maxTeamSize) - 1 per map
+          const mapMaxRankPoints = (2 * roomData.maxTeamSize) - 1;
+          maxRaidRankPoints += mapMaxRankPoints;
+        } else {
+          // Fallback: if no room data found, assume maxTeamSize of 1
+          maxRaidRankPoints += 1; // (2 * 1) - 1 = 1
+        }
+        
+        // Max floor is always 15 per map (for raids too)
+        maxRaidFloors += 15;
+      });
+      
+      // Fetch leaderboard data to calculate WR total ticks
+      fetchMapsLeaderboardData().then(leaderboardData => {
+        // Calculate WR total ticks for non-raid maps
+        nonRaidMaps.forEach(map => {
+          const bestTicks = leaderboardData?.best?.[map.id]?.ticks || 0;
+          if (bestTicks > 0) {
+            totalWRTicks += bestTicks;
+          }
+        });
+        
+        // Calculate WR total ticks for static raid maps
+        staticRaidMaps.forEach(map => {
+          const bestTicks = leaderboardData?.best?.[map.id]?.ticks || 0;
+          if (bestTicks > 0) {
+            totalWRRaidTicks += bestTicks;
+          }
+        });
+        
+        // Update Speedrun display with calculated values
+        updateSpeedrunDisplay();
+      }).catch(error => {
+        console.error('[Cyclopedia] Error fetching leaderboard data for region statistics:', error);
+        // Still show stats without WR data
+        updateSpeedrunDisplay();
+      });
+      
+      // Function to update speedrun display (called after leaderboard data is fetched)
+      function updateSpeedrunDisplay() {
+        const speedrunValue = statsContainer.querySelector('.speedrun-total-ticks');
+        if (speedrunValue) {
+          speedrunValue.textContent = `${totalTicks.toLocaleString()} / ${totalWRTicks > 0 ? totalWRTicks.toLocaleString() : '—'} ticks`;
+          speedrunValue.style.color = totalWRTicks > 0 && totalTicks <= totalWRTicks ? '#8f8' : '#ff8';
+        }
+        
+        // Update raid speedrun display if it exists
+        const raidSpeedrunValue = statsContainer.querySelector('.speedrun-raid-ticks');
+        if (raidSpeedrunValue) {
+          raidSpeedrunValue.textContent = `Raids: ${totalRaidTicks.toLocaleString()} / ${totalWRRaidTicks > 0 ? totalWRRaidTicks.toLocaleString() : '—'} ticks`;
+          raidSpeedrunValue.style.color = totalWRRaidTicks > 0 && totalRaidTicks <= totalWRRaidTicks ? '#8f8' : '#ff8';
+        }
+      }
+      
+      // Title
+      const title = document.createElement('h3');
+      const regionName = GAME_DATA.REGION_NAME_MAP[regionId] || regionId;
+      title.textContent = `${regionName} Statistics`;
+      title.style.margin = '0 0 12px 0';
+      title.style.fontSize = '16px';
+      title.style.fontWeight = 'bold';
+      title.style.textAlign = 'center';
+      title.style.color = COLOR_CONSTANTS.TEXT;
+      statsContainer.appendChild(title);
+      
+      // Statistics grid
+      const statsGrid = document.createElement('div');
+      statsGrid.style.display = 'flex';
+      statsGrid.style.flexDirection = 'column';
+      statsGrid.style.gap = '12px';
+      
+      // Explored maps
+      const exploredDiv = document.createElement('div');
+      exploredDiv.style.padding = '10px';
+      exploredDiv.style.border = '2px solid #666';
+      exploredDiv.style.borderRadius = '4px';
+      exploredDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+      
+      const exploredLabel = document.createElement('div');
+      exploredLabel.textContent = 'Explored Maps';
+      exploredLabel.style.fontSize = '13px';
+      exploredLabel.style.fontWeight = 'bold';
+      exploredLabel.style.marginBottom = '6px';
+      exploredLabel.style.color = COLOR_CONSTANTS.TEXT;
+      exploredDiv.appendChild(exploredLabel);
+      
+      const exploredValue = document.createElement('div');
+      exploredValue.textContent = `${exploredCount} / ${totalNonRaidMaps} maps`;
+      exploredValue.style.fontSize = '18px';
+      exploredValue.style.fontWeight = 'bold';
+      exploredValue.style.color = exploredCount === totalNonRaidMaps ? '#8f8' : '#ff8';
+      exploredDiv.appendChild(exploredValue);
+      
+      // Show explored raids if there are any raids in the region
+      if (totalRaidMaps > 0) {
+        const exploredRaidsValue = document.createElement('div');
+        exploredRaidsValue.textContent = `Raids: ${exploredRaidsCount} / ${totalRaidMaps} maps`;
+        exploredRaidsValue.style.fontSize = '12px';
+        exploredRaidsValue.style.fontWeight = 'normal';
+        exploredRaidsValue.style.color = exploredRaidsCount === totalRaidMaps ? '#8f8' : '#ff8';
+        exploredRaidsValue.style.marginTop = '6px';
+        exploredDiv.appendChild(exploredRaidsValue);
+      }
+      
+      statsGrid.appendChild(exploredDiv);
+      
+      // Speedrun
+      const speedrunDiv = document.createElement('div');
+      speedrunDiv.style.padding = '10px';
+      speedrunDiv.style.border = '2px solid #666';
+      speedrunDiv.style.borderRadius = '4px';
+      speedrunDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+      
+      const speedrunLabel = document.createElement('div');
+      speedrunLabel.textContent = 'Speedrun';
+      speedrunLabel.style.fontSize = '13px';
+      speedrunLabel.style.fontWeight = 'bold';
+      speedrunLabel.style.marginBottom = '6px';
+      speedrunLabel.style.color = COLOR_CONSTANTS.TEXT;
+      speedrunDiv.appendChild(speedrunLabel);
+      
+      const speedrunValue = document.createElement('div');
+      speedrunValue.className = 'speedrun-total-ticks';
+      speedrunValue.textContent = `${totalTicks.toLocaleString()} / — ticks`;
+      speedrunValue.style.fontSize = '18px';
+      speedrunValue.style.fontWeight = 'bold';
+      speedrunValue.style.color = '#ff8';
+      speedrunDiv.appendChild(speedrunValue);
+      
+      // Show raid speedrun if there are any raids in the region
+      if (totalRaidMaps > 0) {
+        const raidSpeedrunValue = document.createElement('div');
+        raidSpeedrunValue.className = 'speedrun-raid-ticks';
+        raidSpeedrunValue.textContent = `Raids: ${totalRaidTicks.toLocaleString()} / — ticks`;
+        raidSpeedrunValue.style.fontSize = '12px';
+        raidSpeedrunValue.style.fontWeight = 'normal';
+        raidSpeedrunValue.style.color = '#ff8';
+        raidSpeedrunValue.style.marginTop = '6px';
+        speedrunDiv.appendChild(raidSpeedrunValue);
+      }
+      
+      statsGrid.appendChild(speedrunDiv);
+      
+      // Rank Points
+      const rankPointsDiv = document.createElement('div');
+      rankPointsDiv.style.padding = '10px';
+      rankPointsDiv.style.border = '2px solid #666';
+      rankPointsDiv.style.borderRadius = '4px';
+      rankPointsDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+      
+      const rankPointsLabel = document.createElement('div');
+      rankPointsLabel.textContent = 'Rank Points';
+      rankPointsLabel.style.fontSize = '13px';
+      rankPointsLabel.style.fontWeight = 'bold';
+      rankPointsLabel.style.marginBottom = '6px';
+      rankPointsLabel.style.color = COLOR_CONSTANTS.TEXT;
+      rankPointsDiv.appendChild(rankPointsLabel);
+      
+      const rankPointsValue = document.createElement('div');
+      rankPointsValue.textContent = `${totalRankPoints.toLocaleString()} / ${maxRankPoints.toLocaleString()} points`;
+      rankPointsValue.style.fontSize = '18px';
+      rankPointsValue.style.fontWeight = 'bold';
+      rankPointsValue.style.color = totalRankPoints === maxRankPoints ? '#8f8' : '#ff8';
+      rankPointsDiv.appendChild(rankPointsValue);
+      
+      // Show raid rank points if there are any raids in the region
+      if (totalRaidMaps > 0) {
+        const raidRankPointsValue = document.createElement('div');
+        raidRankPointsValue.textContent = `Raids: ${totalRaidRankPoints.toLocaleString()} / ${maxRaidRankPoints.toLocaleString()} points`;
+        raidRankPointsValue.style.fontSize = '12px';
+        raidRankPointsValue.style.fontWeight = 'normal';
+        raidRankPointsValue.style.color = totalRaidRankPoints === maxRaidRankPoints ? '#8f8' : '#ff8';
+        raidRankPointsValue.style.marginTop = '6px';
+        rankPointsDiv.appendChild(raidRankPointsValue);
+      }
+      
+      statsGrid.appendChild(rankPointsDiv);
+      
+      // Floors
+      const floorsDiv = document.createElement('div');
+      floorsDiv.style.padding = '10px';
+      floorsDiv.style.border = '2px solid #666';
+      floorsDiv.style.borderRadius = '4px';
+      floorsDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+      
+      const floorsLabel = document.createElement('div');
+      floorsLabel.textContent = 'Floors';
+      floorsLabel.style.fontSize = '13px';
+      floorsLabel.style.fontWeight = 'bold';
+      floorsLabel.style.marginBottom = '6px';
+      floorsLabel.style.color = COLOR_CONSTANTS.TEXT;
+      floorsDiv.appendChild(floorsLabel);
+      
+      const floorsValue = document.createElement('div');
+      floorsValue.textContent = `${totalFloors.toLocaleString()} / ${maxFloors.toLocaleString()} floors`;
+      floorsValue.style.fontSize = '18px';
+      floorsValue.style.fontWeight = 'bold';
+      floorsValue.style.color = totalFloors === maxFloors ? '#8f8' : '#ff8';
+      floorsDiv.appendChild(floorsValue);
+      
+      // Show raid floors if there are any raids in the region
+      if (totalRaidMaps > 0) {
+        const raidFloorsValue = document.createElement('div');
+        raidFloorsValue.textContent = `Raids: ${totalRaidFloors.toLocaleString()} / ${maxRaidFloors.toLocaleString()} floors`;
+        raidFloorsValue.style.fontSize = '12px';
+        raidFloorsValue.style.fontWeight = 'normal';
+        raidFloorsValue.style.color = totalRaidFloors === maxRaidFloors ? '#8f8' : '#ff8';
+        raidFloorsValue.style.marginTop = '6px';
+        floorsDiv.appendChild(raidFloorsValue);
+      }
+      
+      statsGrid.appendChild(floorsDiv);
+      
+      statsContainer.appendChild(statsGrid);
+      return statsContainer;
+    }
+
     // Helper function to create map information section
     function createMapInfoSection(selectedMap, roomName) {
       const mapInfoDiv = document.createElement('div');
@@ -10522,6 +12271,13 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             }
           }
           
+          // Find the map name for selectedMap (if selectedMap is an ID, convert to name)
+          let selectedMapName = null;
+          if (selectedMap) {
+            const selectedMapData = mapsInRegion.find(map => map.id === selectedMap);
+            selectedMapName = selectedMapData ? selectedMapData.name : selectedMap;
+          }
+          
           const box = createBox({
             title: 'Maps',
             items: mapsInRegion.map(map => map.name),
@@ -10529,7 +12285,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
             type: 'map',
             selectedCreature: null,
             selectedEquipment: null,
-            selectedInventory: selectedMap,
+            selectedInventory: selectedMapName,
             setSelectedCreature: () => {},
             setSelectedEquipment: () => {},
             setSelectedInventory: (mapName) => {
@@ -10674,6 +12430,36 @@ async function fetchWithDeduplication(url, key, priority = 0) {
       col3.appendChild(col3Title);
       col3.appendChild(col3Content);
       
+      // Function to update column layout based on selection
+      function updateColumnLayout(isRegionSelected) {
+        if (isRegionSelected) {
+          // Region selected: Statistics (small) on left (col2), Map Information (large) on right (col3)
+          // col2 = Statistics (small, left)
+          Object.assign(col2.style, {
+            width: '250px', minWidth: '250px', maxWidth: '250px', flex: '0 0 250px'
+          });
+          col2TitleP.textContent = 'Statistics';
+          
+          // col3 = Map Information (large, right)
+          Object.assign(col3.style, {
+            flex: '1 1 0', width: 'auto', minWidth: '0', maxWidth: 'none'
+          });
+          col3TitleP.textContent = 'Map Information';
+        } else {
+          // Map selected: Map Information (small) on left (col2), Statistics (large) on right (col3)
+          // col2 = Map Information (small, left)
+          Object.assign(col2.style, {
+            width: '250px', minWidth: '250px', maxWidth: '250px', flex: '0 0 250px'
+          });
+          col2TitleP.textContent = 'Map Information';
+          
+          // col3 = Statistics (large, right)
+          Object.assign(col3.style, {
+            flex: '1 1 0', width: 'auto', minWidth: '0', maxWidth: 'none'
+          });
+          col3TitleP.textContent = 'Statistics';
+        }
+      }
 
       
       function updateRightCol() {
@@ -10684,6 +12470,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
           
           // Only update if state actually changed
           if (MapsTabDOMOptimizer.currentState.selectedMap === selectedMap && 
+              MapsTabDOMOptimizer.currentState.selectedCategory === selectedCategory &&
               MapsTabDOMOptimizer.currentState.roomData === roomData &&
               MapsTabDOMOptimizer.currentState.roomName === roomName) {
             return; // No change needed
@@ -10691,6 +12478,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
           
           // Update current state
           MapsTabDOMOptimizer.currentState.selectedMap = selectedMap;
+          MapsTabDOMOptimizer.currentState.selectedCategory = selectedCategory;
           MapsTabDOMOptimizer.currentState.roomData = roomData;
           MapsTabDOMOptimizer.currentState.roomName = roomName;
           
@@ -10700,6 +12488,37 @@ async function fetchWithDeduplication(url, key, priority = 0) {
           
           if (col2Content) col2Content.innerHTML = '';
           if (col3Content) col3Content.innerHTML = '';
+          
+          // Check if region is selected but no map is selected
+          if (selectedCategory && !selectedMap && globalThis.state?.utils?.REGIONS) {
+            const region = globalThis.state.utils.REGIONS.find(r => r.id === selectedCategory);
+            if (region && region.rooms) {
+              // Update column layout for region view
+              updateColumnLayout(true);
+              
+              // Show all maps for the region in Map Information (col3 = right column, large)
+              const mapsInRegion = region.rooms.map(room => ({
+                id: room.id,
+                name: globalThis.state.utils.ROOM_NAME[room.id] || room.id
+              }));
+              
+              const regionMapsDiv = createRegionMapsSection(mapsInRegion, selectedCategory, (mapId) => {
+                selectedMap = mapId;
+                updateBottomBox();
+                updateRightCol();
+              });
+              col3Content.appendChild(regionMapsDiv);
+              
+              // Show region statistics (col2 = left column, small)
+              const statsContainer = createRegionStatisticsSection(selectedCategory, mapsInRegion);
+              col2Content.appendChild(statsContainer);
+              
+              return;
+            }
+          }
+          
+          // Update column layout for map view
+          updateColumnLayout(false);
           
           if (selectedMap) {
             // Column 2: Two separate divs - Map Information and Creature Information
@@ -10825,7 +12644,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
               contentContainer.appendChild(creaturesContainer);
             }
             
-            // Add both divs to col2 content area
+            // Add both divs to col2 content area (Map Information - left column, small)
             col2Content.appendChild(mapInfoDiv);
             col2Content.appendChild(creatureInfoDiv);
             
@@ -10841,7 +12660,7 @@ async function fetchWithDeduplication(url, key, priority = 0) {
                 // If no overflow, keep overflowY: 'hidden' (no scrollbar)
             }, 0);
             
-            // Column 3: Statistics
+            // Column 3: Statistics (right column, large)
             const statsContainer = createStatisticsSection(selectedMap);
             col3Content.appendChild(statsContainer);
             
@@ -10879,6 +12698,9 @@ async function fetchWithDeduplication(url, key, priority = 0) {
         }
       }
 
+      // Set initial column layout (map view by default)
+      updateColumnLayout(false);
+      
       updateRightCol();
 
       d.appendChild(leftCol);
@@ -10982,6 +12804,112 @@ async function fetchWithDeduplication(url, key, priority = 0) {
     mainContent.style.maxHeight = '500px';
 
     defineSetActiveTab(tabButtons, mainContent, tabPages);
+
+    // Home search navigation bridge (used by the Home tab search box)
+    function _cyclopediaFindBoxByTitle(tabRoot, titleText) {
+      if (!tabRoot) return null;
+      const titles = Array.from(tabRoot.querySelectorAll('h2.widget-top p'));
+      const p = titles.find(el => (el.textContent || '').trim() === titleText);
+      return p ? p.closest('div') : null;
+    }
+
+    function _cyclopediaFindClickableListItems(root) {
+      if (!root) return [];
+      return Array.from(root.querySelectorAll('div.pixel-font-16'));
+    }
+
+    function _cyclopediaClickListItem(root, desiredText) {
+      const want = cyclopediaNormalizeSearchText(desiredText);
+      if (!want) return false;
+
+      const items = _cyclopediaFindClickableListItems(root);
+      for (const item of items) {
+        const span = item.querySelector('span');
+        const text = cyclopediaNormalizeSearchText(span ? span.textContent : item.textContent);
+        if (text === want) {
+          item.click();
+          return true;
+        }
+      }
+      // Fallback: contains
+      for (const item of items) {
+        const span = item.querySelector('span');
+        const text = cyclopediaNormalizeSearchText(span ? span.textContent : item.textContent);
+        if (text.includes(want)) {
+          item.click();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function _cyclopediaNavigateFromHome(target) {
+      if (!target || typeof target !== 'object') return false;
+
+      try {
+        if (target.type === 'creature') {
+          setActiveTab(1);
+          return _cyclopediaClickListItem(tabPages[1], target.name);
+        }
+
+        if (target.type === 'equipment') {
+          setActiveTab(2);
+          if (typeof window !== 'undefined') window.cyclopediaSelectedEquipment = target.name;
+          return _cyclopediaClickListItem(tabPages[2], target.name);
+        }
+
+        if (target.type === 'inventoryCategory') {
+          setActiveTab(3);
+          const inventoryTab = tabPages[3];
+          const topBox = _cyclopediaFindBoxByTitle(inventoryTab, 'Inventory');
+          return _cyclopediaClickListItem(topBox || inventoryTab, target.categoryName);
+        }
+
+        if (target.type === 'inventoryItem') {
+          setActiveTab(3);
+          const inventoryTab = tabPages[3];
+          const topBox = _cyclopediaFindBoxByTitle(inventoryTab, 'Inventory');
+
+          // Select category first (sync), then item (after DOM refresh)
+          const ok = _cyclopediaClickListItem(topBox || inventoryTab, target.categoryName);
+          const clickItemTimeout = setTimeout(() => {
+            // Bottom box title equals the category name
+            const bottomBox = _cyclopediaFindBoxByTitle(inventoryTab, target.categoryName) || inventoryTab;
+            _cyclopediaClickListItem(bottomBox, target.itemDisplayName);
+          }, 0);
+          TimerManager.addTimeout(clickItemTimeout, 'homeSearchInvSelect');
+          return ok;
+        }
+
+        if (target.type === 'region') {
+          setActiveTab(4);
+          const mapsTab = tabPages[4];
+          const regionsBox = _cyclopediaFindBoxByTitle(mapsTab, 'Regions');
+          return _cyclopediaClickListItem(regionsBox || mapsTab, target.regionName);
+        }
+
+        if (target.type === 'map') {
+          setActiveTab(4);
+          const mapsTab = tabPages[4];
+          const regionsBox = _cyclopediaFindBoxByTitle(mapsTab, 'Regions');
+          const ok = _cyclopediaClickListItem(regionsBox || mapsTab, target.regionName);
+          const clickMapTimeout = setTimeout(() => {
+            const mapsBox = _cyclopediaFindBoxByTitle(mapsTab, 'Maps') || mapsTab;
+            _cyclopediaClickListItem(mapsBox, target.mapName);
+          }, 0);
+          TimerManager.addTimeout(clickMapTimeout, 'homeSearchMapSelect');
+          return ok;
+        }
+      } catch (error) {
+        console.warn('[Cyclopedia] HomeSearch: navigation failed:', error);
+      }
+
+      return false;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.cyclopediaHomeSearchNavigate = _cyclopediaNavigateFromHome;
+    }
 
     flexRow.appendChild(mainContent);
     content.appendChild(flexRow);
@@ -11643,31 +13571,156 @@ function renderCreatureTemplate(name, showShinyPortraits = false) {
   abilitySection.style.marginTop = '0';
   abilitySection.style.width = '100%';
 
+  // Store references for the click handler (declared early so they're in scope)
+  let currentTooltipComponent = null;
+  let currentAbilityContainer = null;
+  let normalTooltipComponent = null;
+  let awakenTooltipComponent = null;
+  let showAwakenedAbility = false;
+
+  // Create a flex container for title and button (matching Creatures title style)
+  const abilityTitleContainer = document.createElement('div');
+  abilityTitleContainer.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0;
+    gap: 1px;
+  `;
+  
+  // Create "Ability" title (83% width)
   const abilityTitle = document.createElement('h2');
   abilityTitle.className = 'widget-top widget-top-text ' + FONT_CONSTANTS.SIZES.TITLE;
-  abilityTitle.style.margin = '0';
-  abilityTitle.style.padding = '2px 0';
-  abilityTitle.style.textAlign = 'center';
-  abilityTitle.style.color = COLOR_CONSTANTS.TEXT;
-  abilityTitle.style.width = '100%';
-  abilityTitle.style.boxSizing = 'border-box';
-  abilityTitle.style.display = 'block';
-  abilityTitle.style.position = 'relative';
-  abilityTitle.style.top = '0';
-  abilityTitle.style.left = '0';
-  abilityTitle.style.right = '0';
-  abilityTitle.style.marginLeft = '0';
-  abilityTitle.style.width = '100%';
+  abilityTitle.style.cssText = `
+    margin: 0px;
+    padding: 2px 8px;
+    text-align: center;
+    color: rgb(255, 255, 255);
+    width: 83%;
+    flex: 0 0 83%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 16px;
+    height: 100%;
+    align-self: stretch;
+  `;
+  abilityTitle.textContent = 'Ability';
+  abilityTitleContainer.appendChild(abilityTitle);
 
-  const abilityTitleP = document.createElement('p');
-  abilityTitleP.textContent = 'Ability';
-  abilityTitleP.className = FONT_CONSTANTS.SIZES.TITLE;
-  abilityTitleP.style.margin = '0';
-  abilityTitleP.style.padding = '0';
-  abilityTitleP.style.textAlign = 'center';
-  abilityTitleP.style.color = COLOR_CONSTANTS.TEXT;
-  abilityTitle.appendChild(abilityTitleP);
-  abilitySection.appendChild(abilityTitle);
+  // Create the toggle button (15% width, matching shiny button style)
+  const awakenIconButton = document.createElement('button');
+  awakenIconButton.className = 'widget-top widget-top-text ' + FONT_CONSTANTS.SIZES.TITLE;
+  awakenIconButton.title = 'Normal Mode';
+  awakenIconButton.style.cssText = `
+    margin: 0px;
+    padding: 2px 8px;
+    text-align: center;
+    color: rgb(255, 255, 255);
+    cursor: pointer;
+    width: 15%;
+    flex: 0 0 15%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 23px;
+    outline: none;
+  `;
+  
+  const awakenIconImg = document.createElement('img');
+  awakenIconImg.src = 'https://bestiaryarena.com/assets/icons/star-tier-awaken.png';
+  awakenIconImg.alt = 'Awakened Ability';
+  awakenIconImg.style.cssText = 'width: 10px; height: 10px;';
+  awakenIconButton.appendChild(awakenIconImg);
+  
+  // Add click handler to toggle between normal and awakened ability
+  awakenIconButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showAwakenedAbility = !showAwakenedAbility;
+    awakenIconButton.title = showAwakenedAbility ? 'Awakened Mode' : 'Normal Mode';
+    
+    // Update background and border color to show toggle state
+    if (showAwakenedAbility) {
+      awakenIconButton.style.background = 'url("https://bestiaryarena.com/_next/static/media/background-green.be515334.png") repeat';
+      awakenIconButton.style.border = '1px solid #4CAF50';
+    } else {
+      // Reset to default widget-top styling
+      awakenIconButton.style.background = '';
+      awakenIconButton.style.border = '';
+    }
+    
+    try {
+      const abilityMonsterData = monsterId ? safeGetMonsterData(monsterId) : null;
+      if (abilityMonsterData && abilityMonsterData.metadata && abilityMonsterData.metadata.skill && abilityMonsterData.metadata.skill.TooltipContent) {
+        // Unmount current tooltip component if it exists
+        if (currentTooltipComponent && typeof currentTooltipComponent.unmount === 'function') {
+          currentTooltipComponent.unmount();
+        }
+        
+        // Clear the ability container - must create fresh DOM elements for React
+        if (currentAbilityContainer) {
+          currentAbilityContainer.innerHTML = '';
+        }
+        
+        // Always create a fresh root element and component to avoid React mounting issues
+        // React components are tied to their DOM root, so we must create fresh ones each time
+        const rootElement = document.createElement('div');
+        rootElement.classList.add('tooltip-prose');
+        rootElement.classList.add(FONT_CONSTANTS.SIZES.SMALL);
+        rootElement.style.width = '100%';
+        rootElement.style.height = '100%';
+        rootElement.style.color = COLOR_CONSTANTS.TEXT;
+        rootElement.style.lineHeight = '1.1';
+        
+        const AbilityTooltip = abilityMonsterData.metadata.skill.TooltipContent;
+        
+        if (typeof globalThis.state.utils.createUIComponent === 'function') {
+          // Create a fresh component each time - React components can't be reused with new DOM
+          const tooltipComponent = showAwakenedAbility 
+            ? globalThis.state.utils.createUIComponent(rootElement, AbilityTooltip, { awaken: true })
+            : globalThis.state.utils.createUIComponent(rootElement, AbilityTooltip);
+          
+          // Store references for potential cleanup
+          if (showAwakenedAbility) {
+            awakenTooltipComponent = tooltipComponent;
+          } else {
+            normalTooltipComponent = tooltipComponent;
+          }
+          
+          if (tooltipComponent && typeof tooltipComponent.mount === 'function') {
+            tooltipComponent.mount();
+            currentAbilityContainer.appendChild(rootElement);
+            currentTooltipComponent = tooltipComponent;
+            
+            const blockquotes = rootElement.querySelectorAll('blockquote');
+            blockquotes.forEach(bq => {
+              bq.style.setProperty('font-size', '10px', 'important');
+            });
+            
+            setTimeout(() => {
+              let fontSize = 12;
+              const minFontSize = 9;
+              while ((rootElement.scrollHeight > rootElement.clientHeight || rootElement.scrollWidth > rootElement.clientWidth) && fontSize > minFontSize) {
+                fontSize--;
+                rootElement.style.fontSize = fontSize + 'px';
+              }
+            }, 0);
+          }
+          
+          // Update stored tooltip component in ability section
+          if (abilitySection) {
+            abilitySection._tooltipComponent = tooltipComponent;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Cyclopedia] Error toggling awakened ability:', error);
+    }
+  });
+  
+  abilityTitleContainer.appendChild(awakenIconButton);
+  abilitySection.appendChild(abilityTitleContainer);
 
   // Create scrollable container for ability content
   const abilityScrollContainer = document.createElement('div');
@@ -11687,6 +13740,7 @@ function renderCreatureTemplate(name, showShinyPortraits = false) {
   abilityContainer.style.margin = '0';
   abilityContainer.style.width = '100%';
   abilityContainer.style.boxSizing = 'border-box';
+  currentAbilityContainer = abilityContainer; // Store reference
   
   let tooltipComponent = null;
   try {
@@ -11704,6 +13758,9 @@ function renderCreatureTemplate(name, showShinyPortraits = false) {
       
       if (typeof globalThis.state.utils.createUIComponent === 'function') {
         tooltipComponent = globalThis.state.utils.createUIComponent(rootElement, AbilityTooltip);
+        currentTooltipComponent = tooltipComponent; // Store reference
+        normalTooltipComponent = tooltipComponent; // Store normal reference for toggling
+        normalRootElement = rootElement; // Store normal root element for toggling
         
         if (tooltipComponent && typeof tooltipComponent.mount === 'function') {
           tooltipComponent.mount();
@@ -12365,6 +14422,261 @@ function renderCyclopediaWelcomeColumn(playerName) {
     fallbackDiv.textContent = 'Welcome to Cyclopedia!';
     return fallbackDiv;
   }
+}
+
+function renderCyclopediaSearchColumn() {
+  const container = document.createElement('div');
+  container.style.flex = '1';
+  container.style.display = 'flex';
+  container.style.flexDirection = 'column';
+  container.style.justifyContent = 'center';
+  container.style.alignItems = 'stretch';
+  container.style.padding = '0';
+  container.style.width = '100%';
+  container.style.minHeight = '0';
+  container.style.height = '100%';
+
+  const title = DOMUtils.createTitle('Search');
+  container.appendChild(title);
+
+  const panel = document.createElement('div');
+  panel.className = 'frame-pressed-1 surface-dark';
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'column';
+  panel.style.gap = '8px';
+  panel.style.flex = '1 1 0';
+  panel.style.minHeight = '0';
+  panel.style.padding = '10px';
+  panel.style.boxSizing = 'border-box';
+
+  const inputWrap = document.createElement('div');
+  inputWrap.style.position = 'relative';
+  inputWrap.style.width = '100%';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Search creatures, equipment, maps, inventory...';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  inputWrap.appendChild(input);
+
+  Object.assign(input.style, {
+    width: '100%',
+    padding: '6px 28px 6px 10px',
+    border: '1px solid #444',
+    borderRadius: '4px',
+    backgroundColor: COLOR_CONSTANTS.BACKGROUND,
+    color: COLOR_CONSTANTS.TEXT,
+    fontFamily: FONT_CONSTANTS.PRIMARY,
+    fontSize: '12px',
+    boxSizing: 'border-box',
+    outline: 'none'
+  });
+
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.textContent = '×';
+  Object.assign(clearBtn.style, {
+    position: 'absolute',
+    right: '6px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: '20px',
+    height: '20px',
+    lineHeight: '18px',
+    borderRadius: '4px',
+    border: '1px solid #444',
+    background: COLOR_CONSTANTS.BACKGROUND,
+    color: COLOR_CONSTANTS.TEXT,
+    cursor: 'pointer',
+    display: 'none',
+    padding: '0',
+    fontFamily: FONT_CONSTANTS.PRIMARY
+  });
+  inputWrap.appendChild(clearBtn);
+
+  panel.appendChild(inputWrap);
+
+  const resultsTitle = document.createElement('div');
+  resultsTitle.className = FONT_CONSTANTS.SIZES.SMALL;
+  resultsTitle.textContent = 'Results';
+  Object.assign(resultsTitle.style, { color: COLOR_CONSTANTS.SECONDARY, paddingLeft: '2px' });
+  panel.appendChild(resultsTitle);
+
+  const scroll = DOMUtils.createScrollContainer('100%', false);
+  const resultsEl = scroll?.element || document.createElement('div');
+  const resultsContent = scroll?.contentContainer || resultsEl;
+
+  // IMPORTANT: api.ui.components.createScrollContainer already provides a scrollable viewport.
+  // Setting overflowY: 'scroll' on the outer element causes a second (native) scrollbar.
+  Object.assign(resultsEl.style, {
+    flex: '1 1 0',
+    minHeight: '0',
+    padding: '0',
+    overflow: scroll?.element ? 'hidden' : 'auto'
+  });
+  Object.assign(resultsContent.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    padding: '2px'
+  });
+
+  function setEmptyState(text) {
+    resultsContent.innerHTML = '';
+    const msg = document.createElement('div');
+    msg.className = FONT_CONSTANTS.SIZES.BODY;
+    msg.textContent = text;
+    Object.assign(msg.style, {
+      color: '#ccc',
+      padding: '8px 6px',
+      textAlign: 'center',
+      opacity: '0.9'
+    });
+    resultsContent.appendChild(msg);
+  }
+
+  let abilityRefreshToken = 0;
+
+  function renderResults(query) {
+    const { results } = CyclopediaHomeSearch.search(query);
+    resultsContent.innerHTML = '';
+
+    const qTrim = (query || '').trim();
+    const wantsAbilityText = qTrim.length >= 3;
+    const abilityReady = wantsAbilityText
+      ? (typeof CyclopediaHomeSearch.isAbilityIndexReady === 'function' ? CyclopediaHomeSearch.isAbilityIndexReady() : true)
+      : true;
+
+    // If this query might need ability-text hits and the ability index isn't ready yet:
+    // kick off indexing and refresh results ONCE when indexing completes.
+    if (wantsAbilityText && !abilityReady && typeof CyclopediaHomeSearch.ensureAbilityIndexReady === 'function') {
+      const token = ++abilityRefreshToken;
+      CyclopediaHomeSearch.ensureAbilityIndexReady().then(() => {
+        // Only refresh if this is still the latest request and the query is unchanged.
+        if (token !== abilityRefreshToken) return;
+        if ((input.value || '') !== query) return;
+        renderResults(query);
+      });
+    }
+
+    if (!query || qTrim.length < 2) {
+      setEmptyState('Type at least 2 characters to search.');
+      return;
+    }
+    if (!results || results.length === 0) {
+      if (wantsAbilityText && !abilityReady) setEmptyState('Indexing ability text... Results will appear shortly.');
+      else setEmptyState('No results found.');
+      return;
+    }
+
+    results.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = FONT_CONSTANTS.SIZES.BODY;
+      row.setAttribute('data-home-search-result', 'true');
+      Object.assign(row.style, {
+        cursor: 'pointer',
+        padding: '6px 8px',
+        borderRadius: '4px',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        color: COLOR_CONSTANTS.TEXT,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px'
+      });
+
+      const top = document.createElement('div');
+      top.style.display = 'flex';
+      top.style.justifyContent = 'space-between';
+      top.style.gap = '8px';
+
+      const left = document.createElement('div');
+      left.style.display = 'flex';
+      left.style.gap = '8px';
+      left.style.alignItems = 'baseline';
+      left.style.minWidth = '0';
+
+      const badge = document.createElement('span');
+      badge.className = FONT_CONSTANTS.SIZES.SMALL;
+      badge.textContent = r.kindLabel || 'Result';
+      Object.assign(badge.style, { color: COLOR_CONSTANTS.PRIMARY, whiteSpace: 'nowrap' });
+
+      const label = document.createElement('span');
+      label.textContent = r.label;
+      Object.assign(label.style, { color: COLOR_CONSTANTS.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+
+      left.appendChild(badge);
+      left.appendChild(label);
+      top.appendChild(left);
+      row.appendChild(top);
+
+      if (r.subtitle) {
+        const sub = document.createElement('div');
+        sub.className = FONT_CONSTANTS.SIZES.SMALL;
+        sub.textContent = r.subtitle;
+        Object.assign(sub.style, { color: '#bbb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+        row.appendChild(sub);
+      }
+
+      const onClick = () => {
+        try {
+          const nav = typeof window !== 'undefined' ? window.cyclopediaHomeSearchNavigate : null;
+          if (typeof nav === 'function') {
+            nav(r.target);
+          } else {
+            console.warn('[Cyclopedia] HomeSearch: navigation bridge not available yet.');
+          }
+        } catch (e) {
+          console.warn('[Cyclopedia] HomeSearch: error navigating:', e);
+        }
+      };
+
+      row.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+      row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.08)'; });
+      row.addEventListener('mouseleave', () => { row.style.background = 'rgba(255,255,255,0.04)'; });
+
+      resultsContent.appendChild(row);
+    });
+  }
+
+  let debounceId = null;
+  let lastQuery = '';
+  function scheduleRender() {
+    const value = input.value || '';
+    lastQuery = value;
+    clearBtn.style.display = value ? 'block' : 'none';
+
+    if (debounceId) clearTimeout(debounceId);
+    debounceId = setTimeout(() => renderResults(value), 120);
+  }
+
+  input.addEventListener('input', scheduleRender);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      input.value = '';
+      scheduleRender();
+      input.blur();
+    } else if (e.key === 'Enter') {
+      // Click first result if present
+      const first = resultsContent.querySelector('[data-home-search-result="true"]');
+      if (first) first.click();
+    }
+  });
+
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    input.value = '';
+    scheduleRender();
+    input.focus();
+  });
+
+  // Initial state
+  setEmptyState('Type at least 2 characters to search.');
+
+  panel.appendChild(resultsEl);
+  container.appendChild(panel);
+  return container;
 }
 
 const CYCLOPEDIA_MAX_VALUES = {
@@ -13137,6 +15449,16 @@ function cleanupCyclopediaModal() {
   // Clear equipment selection global variable
   if (typeof window !== 'undefined') {
     window.cyclopediaSelectedEquipment = null;
+    window.cyclopediaHomeSearchNavigate = null;
+  }
+  
+  // Reset home search caches (safe, best-effort)
+  try {
+    if (CyclopediaHomeSearch && typeof CyclopediaHomeSearch.reset === 'function') {
+      CyclopediaHomeSearch.reset();
+    }
+  } catch (e) {
+    // ignore
   }
   
   // Simple memory cleanup
@@ -13280,5 +15602,4 @@ if (typeof window !== 'undefined') {
 if (typeof context !== 'undefined' && context.api) {
   exports.init();
 }
-
 

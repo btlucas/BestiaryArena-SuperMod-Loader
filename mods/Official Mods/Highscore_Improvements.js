@@ -164,7 +164,11 @@ function createRankContent(opportunities) {
       // Build tick improvement text if applicable
       let tickInfo = '';
       if (o.type === 'tick') {
-        tickInfo = `<div class="pixel-font-14" style="color: #ff8;">Your ${o.yourTicks} → Top ${o.bestTicks} ticks</div>`;
+        const tickDiff = o.yourTicks - o.bestTicks;
+        tickInfo = `
+          <div class="pixel-font-14" style="color: #ff8;">Your ${o.yourTicks} → Top ${o.bestTicks} ticks</div>
+          <div class="pixel-font-14" style="color: #8f8;">-${tickDiff} ticks (${((tickDiff / o.yourTicks) * 100).toFixed(1)}%)</div>
+        `;
       }
       
       itemEl.innerHTML = `
@@ -199,12 +203,14 @@ function createRankContent(opportunities) {
   // Add stats footer
   const scoreOpps = opportunities.filter(o => o.type === 'score');
   const tickOpps = opportunities.filter(o => o.type === 'tick');
+  const totalTickGain = tickOpps.reduce((sum, o) => sum + (o.yourTicks - o.bestTicks), 0);
   const statsContainer = document.createElement('div');
   statsContainer.className = 'frame-pressed-1 surface-dark p-2 pixel-font-14';
   statsContainer.innerHTML = `
     <div>Rooms with score improvement: ${scoreOpps.length}</div>
     <div>Rooms with tick improvement: ${tickOpps.length}</div>
     <div>Total rank points to gain: ${scoreOpps.reduce((sum, o) => sum + o.diff, 0)}</div>
+    <div>Total ticks to gain: ${totalTickGain} ticks</div>
   `;
   
   return {

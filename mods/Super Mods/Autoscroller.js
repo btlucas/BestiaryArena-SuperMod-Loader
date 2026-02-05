@@ -59,7 +59,7 @@
   
   // Import unobtainable creatures list from centralized database
   // Add additional hardcoded unobtainable creatures that might not be in the database
-  const ADDITIONAL_UNOBTAINABLE = ['Grynch Clan Commander', 'Grynch Clan Mastermind', 'The Percht Queen', 'Gummy Raider', 'Yeti'];
+  const ADDITIONAL_UNOBTAINABLE = ['Beer Barrel','Grynch Clan Commander', 'Grynch Clan Mastermind', 'The Percht Queen', 'Gummy Raider', 'Yeti'];
   const databaseUnobtainable = window.creatureDatabase?.UNOBTAINABLE_CREATURES || [];
   const UNOBTAINABLE_CREATURES = [...new Set([...databaseUnobtainable, ...ADDITIONAL_UNOBTAINABLE])];
   
